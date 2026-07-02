@@ -32,6 +32,28 @@
               <span :class="['badge badge--sm', kindClass(c.kind)]">{{ $t(kindLabel(c.kind)) }}</span>
               <span v-if="c.kind === 'openai_compat'" class="badge badge--sm text-text-muted">{{ wireLabel(c.wire) }}</span>
               <span class="badge badge--sm text-text-muted">{{ $t('gateway.channels.priority') }} {{ channelPriority(c) }}</span>
+              <!-- Codex OAuth：绑定账号配额（紧凑徽章：订阅计划 / 5h / 7d / 重置额度） -->
+              <template v-if="channelQuotas[c.id]">
+                <span v-if="channelQuotas[c.id].plan" :class="planBadgeClass(channelQuotas[c.id].plan)">{{ channelQuotas[c.id].plan }}</span>
+                <span v-if="channelQuotas[c.id].forbidden" class="badge badge--sm text-danger">{{ $t('platform.antigravity.quotaForbidden') }}</span>
+                <template v-else>
+                  <span
+                    v-if="channelQuotas[c.id].remain5h !== null"
+                    :class="['badge badge--sm font-mono', quotaTextClass(channelQuotas[c.id].remain5h)]"
+                    v-tooltip="channelQuotas[c.id].reset5h ? $t('platform.openai.quota5h') + ' · ' + formatResetShort(channelQuotas[c.id].reset5h) : $t('platform.openai.quota5h')"
+                  >5h {{ channelQuotas[c.id].remain5h }}%</span>
+                  <span
+                    v-if="channelQuotas[c.id].remain7d !== null"
+                    :class="['badge badge--sm font-mono', quotaTextClass(channelQuotas[c.id].remain7d)]"
+                    v-tooltip="channelQuotas[c.id].reset7d ? $t('platform.openai.quota7d') + ' · ' + formatResetLong(channelQuotas[c.id].reset7d) : $t('platform.openai.quota7d')"
+                  >7d {{ channelQuotas[c.id].remain7d }}%</span>
+                  <span
+                    v-if="channelQuotas[c.id].resetTotal > 0"
+                    class="badge badge--sm text-text-muted"
+                    v-tooltip="$t('platform.openai.resetCreditsTooltip')"
+                  >{{ $t('platform.openai.resetCredits') }} {{ channelQuotas[c.id].resetAvailable }}/{{ channelQuotas[c.id].resetTotal }}</span>
+                </template>
+              </template>
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-1">
@@ -79,7 +101,7 @@
         </div>
 
         <div class="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
-          <div v-if="statsMap[c.id]?.recent.length" class="min-w-0 flex-1">
+          <div v-if="statsMap[c.id]?.recent.length" class="min-w-0">
             <div class="flex items-center gap-[3px]">
               <span
                 v-for="(u, i) in statsMap[c.id].recent"
@@ -97,16 +119,41 @@
             </div>
           </div>
           <span v-else class="text-[12px] text-text-muted">{{ $t('gateway.channels.noRequests') }}</span>
-          <label class="flex items-center gap-1 text-[12px] text-text-muted">
-            {{ $t('gateway.channels.priority') }}
-            <input
-              type="number"
-              min="0"
-              :value="channelPriority(c)"
-              class="w-14 rounded-md border border-border bg-muted px-1 py-1 text-center font-mono text-[12px] text-text-secondary focus:border-accent focus:bg-surface focus:text-text focus:outline-none"
-              @change="updatePriority(c, $event.target.value)"
-            />
-          </label>
+          <div class="flex items-center gap-3">
+            <div v-if="statsMap[c.id]?.total" class="flex items-center gap-3 text-[11px]">
+              <div class="text-right leading-tight">
+                <div class="flex items-baseline justify-end gap-1">
+                  <span class="font-mono font-medium text-text" v-tooltip="statsMap[c.id].total.toLocaleString()">{{ formatCompact(statsMap[c.id].total) }}</span>
+                  <span v-if="statsMap[c.id].todayRequests" class="text-[10px] text-success">+{{ formatCompact(statsMap[c.id].todayRequests) }}</span>
+                </div>
+                <div class="text-[10px] uppercase tracking-wide text-text-muted">{{ $t('gateway.usage.totalRequests') }}</div>
+              </div>
+              <div class="text-right leading-tight">
+                <div class="flex items-baseline justify-end gap-1">
+                  <span class="font-mono font-medium text-text" v-tooltip="statsMap[c.id].totalTokens.toLocaleString()">{{ formatCompact(statsMap[c.id].totalTokens) }}</span>
+                  <span v-if="statsMap[c.id].todayTokens" class="text-[10px] text-success">+{{ formatCompact(statsMap[c.id].todayTokens) }}</span>
+                </div>
+                <div class="text-[10px] uppercase tracking-wide text-text-muted">{{ $t('gateway.usage.totalTokens') }}</div>
+              </div>
+              <div class="text-right leading-tight">
+                <div class="flex items-baseline justify-end gap-1">
+                  <span class="font-mono font-medium text-text">{{ formatCost(statsMap[c.id].totalCost) }}</span>
+                  <span v-if="statsMap[c.id].todayCost" class="text-[10px] text-success">+{{ formatCost(statsMap[c.id].todayCost) }}</span>
+                </div>
+                <div class="text-[10px] uppercase tracking-wide text-text-muted">{{ $t('gateway.usage.totalCost') }}</div>
+              </div>
+            </div>
+            <label class="flex items-center gap-1 text-[12px] text-text-muted">
+              {{ $t('gateway.channels.priority') }}
+              <input
+                type="number"
+                min="0"
+                :value="channelPriority(c)"
+                class="w-14 rounded-md border border-border bg-muted px-1 py-1 text-center font-mono text-[12px] text-text-secondary focus:border-accent focus:bg-surface focus:text-text focus:outline-none"
+                @change="updatePriority(c, $event.target.value)"
+              />
+            </label>
+          </div>
         </div>
       </section>
     </div>
@@ -126,23 +173,29 @@
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useGatewayStore } from '../../stores/gateway'
+import { useGatewayPricing } from '../../composables/useGatewayPricing'
 import ChannelDialog from './ChannelDialog.vue'
 import RoutePreviewDialog from './RoutePreviewDialog.vue'
 
 const { t } = useI18n()
 const store = useGatewayStore()
+const { recordCost } = useGatewayPricing()
 
 const showDialog = ref(false)
 const showRoutePreview = ref(false)
 const editing = ref(null)
 
-// 按渠道聚合用量：近 10 次请求状态 + 整体成功率
+// 按渠道聚合用量：近 10 次请求状态 + 整体成功率 + 总请求/Tokens/费用（含今日新增）
 const statsMap = computed(() => {
   const byChannel = {}
   for (const u of store.usage) {
     if (!u.channelId) continue
     ;(byChannel[u.channelId] ||= []).push(u)
   }
+  const dayStart = new Date()
+  dayStart.setHours(0, 0, 0, 0)
+  const startTs = dayStart.getTime()
+  const tokensOf = (u) => (u.promptTokens || 0) + (u.completionTokens || 0)
   const out = {}
   for (const c of store.channels) {
     const list = byChannel[c.id] || []
@@ -152,10 +205,36 @@ const statsMap = computed(() => {
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 10)
     const lastError = recent.find((u) => u.status === 'error') || null
-    out[c.id] = { total, successRate: total ? ((total - errors) / total) * 100 : null, recent, lastError }
+    const totalTokens = list.reduce((sum, u) => sum + tokensOf(u), 0)
+    const totalCost = list.reduce((sum, u) => sum + recordCost(u), 0)
+    const todayList = list.filter((u) => (u.createdAt || 0) >= startTs)
+    const todayTokens = todayList.reduce((sum, u) => sum + tokensOf(u), 0)
+    const todayCost = todayList.reduce((sum, u) => sum + recordCost(u), 0)
+    out[c.id] = {
+      total,
+      successRate: total ? ((total - errors) / total) * 100 : null,
+      recent,
+      lastError,
+      totalTokens,
+      totalCost,
+      todayRequests: todayList.length,
+      todayTokens,
+      todayCost
+    }
   }
   return out
 })
+
+// 紧凑数字（1.2K / 3.4M），小于 1000 原样展示
+const compactFormatter = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
+const formatCompact = (n) => {
+  const v = Number(n) || 0
+  return v < 1000 ? v.toLocaleString() : compactFormatter.format(v)
+}
+const formatCost = (n) => {
+  if (!n) return '$0'
+  return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
+}
 
 const isEnabled = (c) => c.enabled !== false
 
@@ -196,9 +275,9 @@ const kindLabel = (k) => ({
 }[k] || k)
 
 const kindClass = (k) => ({
-  codex_oauth: 'badge--accent-tech',
+  codex_oauth: 'badge--success-tech',
   openai_compat: 'badge--success-tech',
-  anthropic: 'badge--warning-tech'
+  anthropic: 'badge--success-tech'
 }[k] || '')
 
 const wireLabel = (wire) =>
@@ -249,6 +328,92 @@ const target = (c) => {
   return c.baseUrl || t('gateway.channels.defaultBaseUrl')
 }
 
+// —— Codex OAuth 渠道：展示绑定账号的 5h/7d 配额、订阅计划与重置额度 ——
+const codexAccountMap = computed(() => {
+  const m = {}
+  for (const a of store.codexAccounts) {
+    if (a?.id) m[a.id] = a
+  }
+  return m
+})
+
+// 提取 codex_oauth 渠道绑定账号的配额展示数据；无账号或无可展示信息时返回 null
+const codexQuota = (c) => {
+  if (c.kind !== 'codex_oauth') return null
+  const acc = codexAccountMap.value[c.accountId]
+  if (!acc || acc.account_type === 'api') return null
+  const q = acc.quota || {}
+  let plan = null
+  if (acc.openai_auth_json) {
+    try { plan = JSON.parse(acc.openai_auth_json)?.chatgpt_plan_type || null } catch { plan = null }
+  }
+  const used5h = q.codex_5h_used_percent
+  const used7d = q.codex_7d_used_percent
+  const data = {
+    plan,
+    forbidden: Boolean(q.is_forbidden) || Boolean(acc.rt_invalid),
+    remain5h: used5h === null || used5h === undefined ? null : 100 - used5h,
+    reset5h: q.codex_5h_reset_after_seconds || 0,
+    remain7d: used7d === null || used7d === undefined ? null : 100 - used7d,
+    reset7d: q.codex_7d_reset_after_seconds || 0,
+    resetAvailable: q.codex_reset_credits_available ?? 0,
+    resetTotal: q.codex_reset_credits_total ?? 0
+  }
+  if (!data.plan && !data.forbidden && data.remain5h === null && data.remain7d === null && data.resetTotal === 0) return null
+  return data
+}
+
+// 预计算各渠道的 Codex 配额，避免模板重复解析
+const channelQuotas = computed(() => {
+  const out = {}
+  for (const c of store.channels) {
+    const q = codexQuota(c)
+    if (q) out[c.id] = q
+  }
+  return out
+})
+
+const quotaTextClass = (percent) => {
+  if (percent === null || percent === undefined) return 'text-text-muted'
+  if (percent < 10) return 'text-danger'
+  if (percent < 30) return 'text-warning'
+  return 'text-success'
+}
+
+const planBadgeClass = (planType) => {
+  const base = 'badge badge--sm uppercase'
+  switch (planType?.toLowerCase()) {
+    case 'pro':
+    case 'api':
+      return `${base} bg-gradient-to-r from-rose-400 to-pink-500 text-white border-pink-500/50 shadow-sm shadow-pink-500/30`
+    case 'team':
+      return `${base} bg-gradient-to-r from-amber-400 to-amber-500 text-amber-900 border-amber-500/50`
+    case 'plus':
+      return `${base} bg-gradient-to-r from-emerald-400 to-teal-500 text-white border-teal-500/50`
+    default:
+      return base
+  }
+}
+
+const formatResetShort = (seconds) => {
+  if (!seconds) return ''
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return hours > 0 ? `${hours}h${minutes}m` : `${minutes}m`
+}
+
+const formatResetLong = (seconds) => {
+  if (!seconds) return ''
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const parts = []
+  if (days > 0) parts.push(`${days}d`)
+  if (hours > 0) parts.push(`${hours}h`)
+  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}m`)
+  return parts.join('')
+}
+
 const openAdd = () => {
   editing.value = null
   showDialog.value = true
@@ -280,6 +445,10 @@ const confirmDelete = async (c) => {
 onMounted(() => {
   store.loadModels()
   if (!store.usage.length) store.loadUsage()
+  store.loadCodexAccounts()
 })
-onActivated(() => store.loadUsage())
+onActivated(() => {
+  store.loadUsage()
+  store.loadCodexAccounts()
+})
 </script>

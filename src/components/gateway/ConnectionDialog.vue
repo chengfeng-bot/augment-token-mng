@@ -97,11 +97,18 @@ const copy = async (text) => {
   }
 }
 
-const regenerate = () => {
-  const bytes = new Uint8Array(24)
+// 生成随机 token：大小写字母 + 数字混合，使用 crypto 安全随机
+const genToken = (len = 32) => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(len)
   crypto.getRandomValues(bytes)
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-  store.config.apiKey = `sk-atm-${hex}`
+  let out = ''
+  for (let i = 0; i < len; i += 1) out += alphabet[bytes[i] % alphabet.length]
+  return out
+}
+
+const regenerate = () => {
+  store.config.apiKey = `sk-atm-${genToken(32)}`
   showKey.value = true
 }
 

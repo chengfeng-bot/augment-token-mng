@@ -136,7 +136,17 @@ export default {
     },
     overview: {
       cacheHitRate: '缓存命中率',
-      cacheHitRateHint: '读缓存 token 占总输入 token 的比例（仅部分上游返回缓存）'
+      cacheHitRateHint: '读缓存 token 占总输入 token 的比例（仅部分上游返回缓存）',
+      trendTitle: '用量趋势',
+      trendReqTokens: '请求 / Tokens',
+      trendCost: '费用',
+      chartEmpty: '暂无数据',
+      channelShare: '渠道占比',
+      modelShare: '模型占比',
+      shareOthers: '其他',
+      shareRequests: '请求',
+      shareTokens: 'Tokens',
+      shareCost: '费用'
     },
     diagnostics: {
       health: '健康状态',

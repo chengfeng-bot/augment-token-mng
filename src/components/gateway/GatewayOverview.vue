@@ -50,7 +50,7 @@
         <div class="mt-1.5 text-[11px] uppercase tracking-[0.5px] text-text-muted">{{ $t('gateway.usage.totalRequests') }}</div>
       </div>
       <div class="rounded-lg border border-border bg-surface px-4 py-3">
-        <div :class="['font-mono text-[22px] font-semibold leading-none', stats.successRate >= 100 ? 'text-success' : 'text-warning']">{{ stats.successRate.toFixed(1) }}%</div>
+        <div :class="['font-mono text-[22px] font-semibold leading-none', rateClass(stats.successRate)]">{{ stats.successRate.toFixed(1) }}%</div>
         <div class="mt-1.5 text-[11px] uppercase tracking-[0.5px] text-text-muted">{{ $t('gateway.usage.successRate') }}</div>
       </div>
       <!-- 总 tokens（右上角今日新增） -->
@@ -69,9 +69,12 @@
         </div>
       </div>
       <div class="rounded-lg border border-border bg-surface px-4 py-3">
-        <div class="flex items-baseline gap-1">
-          <span class="font-mono text-[22px] font-semibold leading-none text-text">{{ formatCost(stats.totalCost) }}</span>
-          <span v-if="stats.partial" class="text-[11px] text-warning" v-tooltip="$t('gateway.usage.costPartialHint')">{{ $t('gateway.usage.costPartial') }}</span>
+        <div class="flex items-baseline justify-between gap-1">
+          <div class="flex min-w-0 items-baseline gap-1">
+            <span class="font-mono text-[22px] font-semibold leading-none text-text">{{ formatCost(stats.totalCost) }}</span>
+            <span v-if="stats.partial" class="text-[11px] text-warning" v-tooltip="$t('gateway.usage.costPartialHint')">{{ $t('gateway.usage.costPartial') }}</span>
+          </div>
+          <span v-if="stats.todayCost" class="shrink-0 text-[11px] text-success">+{{ formatCost(stats.todayCost) }}</span>
         </div>
         <div class="mt-1.5 flex items-center gap-1 text-[11px] uppercase tracking-[0.5px] text-text-muted">
           {{ $t('gateway.usage.totalCost') }}
@@ -80,8 +83,14 @@
       </div>
     </div>
 
-    <!-- 月度趋势图（近30天，从用量记录派生） -->
-    <CodexUsageChart :loading="store.isLoadingUsage" :chart-data="dailyStats" />
+    <!-- 用量趋势（请求/Tokens、费用，从用量记录派生） -->
+    <GatewayTrendChart :loading="store.isLoadingUsage" :chart-data="dailyStats" />
+
+    <!-- 渠道 / 模型请求占比（悬停附 token 与费用） -->
+    <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <GatewayShareChart :title="$t('gateway.overview.channelShare')" :loading="store.isLoadingUsage" :items="channelShare" />
+      <GatewayShareChart :title="$t('gateway.overview.modelShare')" :loading="store.isLoadingUsage" :items="modelShare" />
+    </div>
 
     <ConnectionDialog :visible="showConnection" @close="showConnection = false" />
 
@@ -123,7 +132,8 @@ import { useGatewayStore } from '../../stores/gateway'
 import { useGatewayPricing } from '../../composables/useGatewayPricing'
 import BaseModal from '../common/BaseModal.vue'
 import ConnectionDialog from './ConnectionDialog.vue'
-import CodexUsageChart from '../openai/CodexUsageChart.vue'
+import GatewayTrendChart from './GatewayTrendChart.vue'
+import GatewayShareChart from './GatewayShareChart.vue'
 
 const { t } = useI18n()
 const store = useGatewayStore()
@@ -196,6 +206,7 @@ const stats = computed(() => {
   const startTs = dayStart.getTime()
   const todayList = list.filter((u) => (u.createdAt || 0) >= startTs)
   const todayTokens = todayList.reduce((sum, u) => sum + (u.promptTokens || 0) + (u.completionTokens || 0), 0)
+  const todayCost = todayList.reduce((sum, u) => sum + recordCost(u), 0)
   return {
     total,
     successRate: total ? ((total - errors) / total) * 100 : 100,
@@ -204,11 +215,12 @@ const stats = computed(() => {
     partial,
     hitRate: prompt ? (cached / prompt) * 100 : null,
     todayRequests: todayList.length,
-    todayTokens
+    todayTokens,
+    todayCost
   }
 })
 
-// 月度趋势：按天聚合请求数与 token（供折线图）
+// 月度趋势：按天聚合请求数 / token / 费用（供折线图切换）
 const dailyStats = computed(() => {
   const byDate = {}
   for (const u of store.usage) {
@@ -216,17 +228,41 @@ const dailyStats = computed(() => {
     const d = new Date(u.createdAt)
     if (Number.isNaN(d.getTime())) continue
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    if (!byDate[key]) byDate[key] = { date: key, requests: 0, tokens: 0 }
+    if (!byDate[key]) byDate[key] = { date: key, requests: 0, tokens: 0, cost: 0 }
     byDate[key].requests += 1
     byDate[key].tokens += (u.promptTokens || 0) + (u.completionTokens || 0)
+    byDate[key].cost += recordCost(u)
   }
   return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
 })
+
+// 渠道 / 模型请求占比：按请求数聚合，附带 token 与费用（供环形图）
+const aggregateShare = (keyOf, labelOf) => {
+  const map = new Map()
+  for (const u of store.usage) {
+    const key = keyOf(u)
+    if (!key) continue
+    let it = map.get(key)
+    if (!it) {
+      it = { label: labelOf(u), requests: 0, tokens: 0, cost: 0 }
+      map.set(key, it)
+    }
+    it.requests += 1
+    it.tokens += (u.promptTokens || 0) + (u.completionTokens || 0)
+    it.cost += recordCost(u)
+  }
+  return [...map.values()].sort((a, b) => b.requests - a.requests)
+}
+const channelShare = computed(() => aggregateShare((u) => u.channelId, (u) => u.channelName || u.channelId))
+const modelShare = computed(() => aggregateShare((u) => u.model, (u) => u.model))
 
 const formatCost = (n) => {
   if (!n) return '$0'
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
 }
+
+// 成功率颜色：≥95% 绿、≥80% 黄、其余红（与渠道卡片保持一致）
+const rateClass = (r) => (r >= 95 ? 'text-success' : r >= 80 ? 'text-warning' : 'text-danger')
 
 // 紧凑单位（1.2K / 3.4M），小于 1000 原样展示
 const compactFormatter = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })

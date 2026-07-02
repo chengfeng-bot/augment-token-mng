@@ -136,7 +136,17 @@ export default {
     },
     overview: {
       cacheHitRate: 'Cache hit rate',
-      cacheHitRateHint: 'Read-cache tokens as a share of total input tokens (only some upstreams report cache)'
+      cacheHitRateHint: 'Read-cache tokens as a share of total input tokens (only some upstreams report cache)',
+      trendTitle: 'Usage Trend',
+      trendReqTokens: 'Requests / Tokens',
+      trendCost: 'Cost',
+      chartEmpty: 'No data',
+      channelShare: 'Channel Share',
+      modelShare: 'Model Share',
+      shareOthers: 'Others',
+      shareRequests: 'Requests',
+      shareTokens: 'Tokens',
+      shareCost: 'Cost'
     },
     diagnostics: {
       health: 'Health',

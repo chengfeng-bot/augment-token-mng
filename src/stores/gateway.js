@@ -43,6 +43,7 @@ export const useGatewayStore = defineStore('gateway', () => {
   const channels = ref([])
   const usage = ref([])
   const bindableAccounts = ref([]) // { id, label, platform }
+  const codexAccounts = ref([]) // openai_list_accounts 完整账号（含 quota），供 Codex OAuth 渠道卡片展示配额
   const models = ref([]) // [{ id, name, models: [{ id, family?, release_date?, custom?, ... }] }]
   const syncedProviders = ref([]) // 同步目录原始分组（不含自定义），用于合并重建
   const customModels = ref([]) // [{ id, developer?, cost?: { input, output, cache_read, cache_write }, ... }]
@@ -180,6 +181,18 @@ export const useGatewayStore = defineStore('gateway', () => {
       bindableAccounts.value = []
     }
     return bindableAccounts.value
+  }
+
+  // 加载完整 OpenAI 账号（含配额），供 Codex OAuth 渠道卡片展示 5h/7d 配额、订阅计划与重置额度
+  const loadCodexAccounts = async () => {
+    try {
+      const list = await invoke('openai_list_accounts')
+      codexAccounts.value = Array.isArray(list) ? list : []
+    } catch (error) {
+      console.warn('openai_list_accounts unavailable:', error)
+      codexAccounts.value = []
+    }
+    return codexAccounts.value
   }
 
   // 合并同步目录与自定义模型为展示分组：自定义同 id 覆盖同步项，未匹配开发商归入「自定义」分组
@@ -326,10 +339,10 @@ export const useGatewayStore = defineStore('gateway', () => {
   }
 
   return {
-    status, config, channels, usage, bindableAccounts, models, customModels, modelsSyncedAt,
+    status, config, channels, usage, bindableAccounts, codexAccounts, models, customModels, modelsSyncedAt,
     isLoadingConfig, isLoadingStatus, isTogglingServer, isLoadingUsage, isSyncingModels,
     loadConfig, saveConfig, loadStatus, startServer, stopServer,
-    loadUsage, clearUsage, loadBindableAccounts,
+    loadUsage, clearUsage, loadBindableAccounts, loadCodexAccounts,
     loadModels, syncModels, allModelIds,
     loadCustomModels, upsertCustomModel, removeCustomModel,
     fetchChannelModels, testChannel,
