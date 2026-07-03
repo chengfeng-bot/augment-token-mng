@@ -186,11 +186,21 @@ impl OutboundTranslator for OpenAiChat {
     }
 
     fn parse_response(&self, body: &Value) -> Result<CanonicalResponse, String> {
+        if let Some(message) = body
+            .get("error")
+            .and_then(|e| e.get("message").or(Some(e)))
+            .and_then(|m| m.as_str())
+        {
+            return Err(message.to_string());
+        }
         let choice = body
             .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|a| a.first());
-        let msg = choice.and_then(|c| c.get("message"));
+        let Some(choice) = choice else {
+            return Err("OpenAI Chat 响应缺少 choices".into());
+        };
+        let msg = choice.get("message");
         let content = msg
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
@@ -211,7 +221,7 @@ impl OutboundTranslator for OpenAiChat {
             reasoning,
             tool_calls,
             finish_reason: choice
-                .and_then(|c| c.get("finish_reason"))
+                .get("finish_reason")
                 .and_then(|f| f.as_str())
                 .map(String::from),
             usage: parse_usage(body),

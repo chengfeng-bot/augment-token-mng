@@ -56,7 +56,23 @@
           </div>
           <div class="form-group">
             <label class="label">{{ $t('gateway.channels.apiKey') }}</label>
-            <input v-model.trim="form.apiKey" type="password" class="input font-mono" placeholder="sk-..." />
+            <div class="flex items-center gap-2">
+              <input
+                v-model.trim="form.apiKey"
+                :type="showApiKey ? 'text' : 'password'"
+                class="input font-mono flex-1"
+                placeholder="sk-..."
+              />
+              <button
+                type="button"
+                class="btn btn--icon btn--secondary shrink-0"
+                v-tooltip="showApiKey ? $t('gateway.hideKey') : $t('gateway.showKey')"
+                @click="showApiKey = !showApiKey"
+              >
+                <svg v-if="!showApiKey" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 6.5c3.79 0 7.17 2.13 8.82 5.5a10.6 10.6 0 0 1-2.45 3.14l1.42 1.42A12.7 12.7 0 0 0 23 12c-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l1.66 1.66c.74-.23 1.52-.36 2.32-.36zM2.28 3 1 4.27l2.35 2.35A12.6 12.6 0 0 0 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84L19.73 22 21 20.73 2.28 3zM7.53 10.8l1.55 1.55A3 3 0 0 0 11.65 14.9l1.55 1.55A5 5 0 0 1 7.53 10.8z"/></svg>
+              </button>
+            </div>
           </div>
           <div v-if="showApiType" class="form-group">
             <label class="label">{{ $t('gateway.channels.apiType') }}</label>
@@ -268,6 +284,7 @@ const form = reactive(blank())
 const activeProvider = ref('codex_oauth')
 const modelInput = ref('')
 const providerDrafts = ref({})
+const showApiKey = ref(false)
 
 // 渠道连通性：拉取远端模型 / 测试可用性的本地状态
 const fetchedModels = ref([])
@@ -295,6 +312,10 @@ const serializeModel = (m) => (m.upstream && m.upstream !== m.id ? { id: m.id, u
 // 芯片展示：别名 → 上游（相等时仅显示别名）
 const modelLabel = (m) => (m.upstream && m.upstream !== m.id ? `${m.id} → ${m.upstream}` : m.id)
 const hasModel = (id) => form.models.some((m) => m.id === id)
+// 某个上游真实 id 是否已被任一模型条目占用（别名条目按其上游 id 计）：
+// 拉取候选/建议/补全均列的是上游真实 id，设过别名后 hasModel 按别名匹配不到，
+// 需再按上游 id 排除，避免已添加的模型重复出现在候选中
+const upstreamInUse = (id) => form.models.some((m) => (m.upstream || m.id) === id)
 
 const channelFields = () => ({
   kind: form.kind,
@@ -325,13 +346,18 @@ const selectProvider = (p) => {
   if (activeProvider.value === p.id) return
   providerDrafts.value[activeProvider.value] = channelFields()
   activeProvider.value = p.id
+  showApiKey.value = false
   const draft = providerDrafts.value[p.id]
   if (draft) {
     applyChannelFields(draft)
   } else {
+    // 切到尚无草稿的服务商：重置协议/凭证/模型，避免上一个服务商的模型与配置残留
     form.kind = p.kind
-    if (p.kind !== 'codex_oauth') form.baseUrl = p.baseUrl || ''
-    if (p.kind === 'openai_compat') form.wire = p.wire || 'chat'
+    form.accountId = ''
+    form.apiKey = ''
+    form.baseUrl = p.kind === 'codex_oauth' ? '' : (p.baseUrl || '')
+    form.wire = p.kind === 'openai_compat' ? (p.wire || 'chat') : 'chat'
+    form.models = []
   }
   clearTransientState()
   testModel.value = form.models[0]?.id || ''
@@ -370,7 +396,7 @@ const providerModelIds = computed(() => {
 // datalist 候选：拉取的远端模型 + 当前服务商建议模型 + 同步目录中该开发商的模型（去重，排除已选）
 const modelOptions = computed(() => {
   const merged = [...new Set([...fetchedModels.value, ...presetModels.value, ...providerModelIds.value])]
-  return merged.filter((id) => !hasModel(id))
+  return merged.filter((id) => !hasModel(id) && !upstreamInUse(id))
 })
 
 // 一键添加建议：拉取过远端模型时优先用真实列表，否则取同步目录（后端已按发布时间倒序），再回退预设精选；排除已选、限量
@@ -379,9 +405,9 @@ const suggestedModels = computed(() => {
   const ranked = providerModelIds.value.length
       ? providerModelIds.value
       : presetModels.value
-  return ranked.filter((m) => !hasModel(m)).slice(0, SUGGEST_LIMIT)
+  return ranked.filter((m) => !hasModel(m) && !upstreamInUse(m)).slice(0, SUGGEST_LIMIT)
 })
-const fetchedCandidateModels = computed(() => fetchedModels.value.filter((id) => !hasModel(id)))
+const fetchedCandidateModels = computed(() => fetchedModels.value.filter((id) => !hasModel(id) && !upstreamInUse(id)))
 
 // 仅第三方渠道可拉取/测试，需 baseUrl + apiKey 均存在
 const canConnect = computed(() => form.kind !== 'codex_oauth' && Boolean(form.baseUrl) && Boolean(form.apiKey))
@@ -434,7 +460,7 @@ const doTestChannel = async () => {
 
 const addModel = (m) => {
   const id = (m || '').trim()
-  if (!id || hasModel(id)) return
+  if (!id || hasModel(id) || upstreamInUse(id)) return
   form.models = [...form.models, { id, upstream: '' }]
 }
 
@@ -500,6 +526,7 @@ watch(
     form.models = normalizeModels(form.models)
     if (form.kind === 'openai_compat' && !form.wire) form.wire = 'chat'
     providerDrafts.value = {}
+    showApiKey.value = false
     clearTransientState()
     testModel.value = form.models[0]?.id || ''
     activeProvider.value = matchProvider()

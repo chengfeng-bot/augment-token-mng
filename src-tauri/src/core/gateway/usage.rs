@@ -220,6 +220,23 @@ impl GatewayUsageStore {
             eprintln!("[GatewayUsage] 清空记录失败: {}", e);
         }
     }
+
+    /// 删除指定渠道的全部用量记录
+    pub fn delete_by_channel(&self, channel_id: &str) {
+        let result = self
+            .get_connection()
+            .and_then(|conn| {
+                conn.execute(
+                    "DELETE FROM gateway_usage WHERE channel_id = ?1",
+                    params![channel_id],
+                )
+                .map_err(|e| format!("删除渠道记录失败: {}", e))
+            });
+        if let Err(e) = result {
+            eprintln!("[GatewayUsage] 删除渠道记录失败: {}", e);
+        }
+    }
+
 }
 
 /// SQLite 行映射为 `UsageRecord`

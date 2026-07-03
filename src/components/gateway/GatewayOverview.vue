@@ -142,6 +142,7 @@ const showConnection = ref(false)
 const showRoutableModels = ref(false)
 
 const enabledChannels = computed(() => store.channels.filter((c) => c.enabled !== false))
+const channelName = (id) => store.channels.find((c) => c.id === id)?.name || id || '—'
 // 模型条目兼容字符串与 { id, upstream } 别名映射，可路由键取别名 id
 const entryId = (m) => (typeof m === 'string' ? m : m?.id || '')
 const routableModels = computed(() => new Set(enabledChannels.value.flatMap((c) => Array.isArray(c.models) ? c.models.map(entryId) : [])))
@@ -253,7 +254,7 @@ const aggregateShare = (keyOf, labelOf) => {
   }
   return [...map.values()].sort((a, b) => b.requests - a.requests)
 }
-const channelShare = computed(() => aggregateShare((u) => u.channelId, (u) => u.channelName || u.channelId))
+const channelShare = computed(() => aggregateShare((u) => u.channelId, (u) => channelName(u.channelId)))
 const modelShare = computed(() => aggregateShare((u) => u.model, (u) => u.model))
 
 const formatCost = (n) => {

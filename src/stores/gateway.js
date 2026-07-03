@@ -336,6 +336,7 @@ export const useGatewayStore = defineStore('gateway', () => {
   const removeChannel = async (id) => {
     channels.value = channels.value.filter((c) => c.id !== id)
     await saveConfig()
+    usage.value = usage.value.filter((u) => u.channelId !== id)
   }
 
   return {

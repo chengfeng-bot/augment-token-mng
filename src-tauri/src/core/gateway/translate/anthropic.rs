@@ -3,6 +3,7 @@
 //! 既作入站协议（/gateway/v1/messages），也作 `anthropic` 渠道的出站协议。
 //! canonical 即 Chat，故此处负责 Messages ↔ Chat 的双向映射。
 
+use base64::Engine;
 use serde_json::{Value, json};
 
 use super::{InboundTranslator, OutboundTranslator, ParseState, RenderState, SseChunk};
@@ -14,6 +15,10 @@ pub struct Anthropic;
 
 fn gen_id() -> String {
     format!("msg_{}", chrono::Utc::now().timestamp_millis())
+}
+
+fn gen_signature() -> String {
+    base64::engine::general_purpose::STANDARD.encode(uuid::Uuid::new_v4().to_string())
 }
 
 /// canonical(OpenAI) finish_reason → Anthropic stop_reason
@@ -337,13 +342,13 @@ fn ensure_message_start(st: &mut RenderState, out: &mut Vec<SseChunk>) {
         .usage
         .as_ref()
         .map(|u| (anth_net_input(u), u.cached_tokens, u.cache_write_tokens))
-        .unwrap_or((0, 0, 0));
+        .unwrap_or((1, 0, 0));
     out.push(SseChunk::named(
         "message_start",
         json!({"type": "message_start", "message": {
             "id": st.id, "type": "message", "role": "assistant", "model": st.model,
             "content": [], "stop_reason": Value::Null, "stop_sequence": Value::Null,
-            "usage": {"input_tokens": in_tokens, "output_tokens": 0,
+            "usage": {"input_tokens": in_tokens, "output_tokens": 1,
                 "cache_read_input_tokens": cache_read, "cache_creation_input_tokens": cache_write}
         }})
         .to_string(),
@@ -360,6 +365,14 @@ fn anth_net_input(u: &Usage) -> u64 {
 fn close_open_block(st: &mut RenderState, out: &mut Vec<SseChunk>) {
     if st.anth_open_kind.is_empty() {
         return;
+    }
+    if st.anth_open_kind == "thinking" {
+        out.push(SseChunk::named(
+            "content_block_delta",
+            json!({"type": "content_block_delta", "index": st.anth_open_index,
+                "delta": {"type": "signature_delta", "signature": gen_signature()}})
+            .to_string(),
+        ));
     }
     out.push(SseChunk::named(
         "content_block_stop",

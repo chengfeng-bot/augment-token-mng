@@ -138,7 +138,12 @@ impl GatewayExecutor {
         } else {
             "/chat/completions"
         };
-        let url = format!("{}{}", base, path);
+        let url = if base.to_ascii_lowercase().ends_with(path) {
+            base.clone()
+        } else {
+            format!("{}{}", base, path)
+        };
+        let body = normalize_openai_compat_body(channel, body);
         let builder = self
             .client
             .post(&url)
@@ -196,6 +201,53 @@ fn require_key(channel: &GatewayChannel) -> Result<String, GatewayError> {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .ok_or_else(|| GatewayError::Credential("渠道缺少 API Key".into()))
+}
+
+/// OpenAI 兼容渠道的轻量兼容层。
+fn normalize_openai_compat_body(channel: &GatewayChannel, body: Bytes) -> Bytes {
+    let Ok(mut root) = serde_json::from_slice::<Value>(&body) else {
+        return body;
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return body;
+    };
+
+    let base = channel
+        .base_url
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let model = obj
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let zhipu_like = base.contains("bigmodel")
+        || base.contains("zhipu")
+        || base.contains("zai")
+        || model.starts_with("glm-");
+    if !zhipu_like {
+        return body;
+    }
+
+    if let Some(choice) = obj.get("tool_choice") {
+        let unsupported_choice = match choice {
+            Value::String(s) => s == "required",
+            Value::Object(_) => true,
+            _ => false,
+        };
+        if unsupported_choice {
+            obj.insert("tool_choice".to_string(), json!("auto"));
+        }
+    }
+    if let Some(effort) = obj.get("reasoning_effort").and_then(|v| v.as_str()) {
+        let kind = if effort == "none" { "disabled" } else { "enabled" };
+        obj.insert("thinking".to_string(), json!({ "type": kind }));
+    }
+
+    serde_json::to_vec(&root)
+        .map(Bytes::from)
+        .unwrap_or(body)
 }
 
 /// 规整 Responses 请求体以兼容 ChatGPT Codex 后端（与 codex 透传一致）：

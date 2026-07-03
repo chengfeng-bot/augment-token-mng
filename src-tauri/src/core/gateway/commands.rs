@@ -3,6 +3,8 @@
 //! 配置读写、enabled 门控（start/stop）、状态查询、用量记录读取/清空，以及可绑定账号
 //! （仅 OpenAI OAuth）列举。网关复用 `8766`，无独立端口；start/stop 仅切换 enabled。
 
+use std::collections::HashSet;
+
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
@@ -57,19 +59,30 @@ pub async fn gateway_set_config(
     config: GatewayConfig,
 ) -> Result<(), String> {
     let dir = app_data_dir(&app)?;
-    {
+    let (snapshot, removed_channel_ids) = {
         let mut guard = state
             .gateway_config
             .lock()
             .map_err(|_| "网关配置锁中毒".to_string())?;
+        let next_ids = config
+            .channels
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<HashSet<_>>();
+        let removed = guard
+            .channels
+            .iter()
+            .filter(|c| !next_ids.contains(c.id.as_str()))
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>();
         *guard = config;
+        (guard.clone(), removed)
+    };
+    snapshot.save(&dir)?;
+    for id in removed_channel_ids {
+        state.gateway_usage.delete_by_channel(&id);
     }
-    let snapshot = state
-        .gateway_config
-        .lock()
-        .map_err(|_| "网关配置锁中毒".to_string())?
-        .clone();
-    snapshot.save(&dir)
+    Ok(())
 }
 
 /// 查询网关状态（enabled 门控；端口固定 8766）

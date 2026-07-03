@@ -29,21 +29,25 @@ pub fn outbound_for(wire: Wire) -> Box<dyn OutboundTranslator> {
 }
 
 /// 增量 SSE 帧解析（以空行分帧，聚合 event/data 行）
+///
+/// 以字节缓冲累积：既兼容 `\n\n` / `\r\n\r\n` / `\r\r` 三种事件分隔风格，也避免多字节
+/// UTF-8 字符被网络分片切断后按 lossy 解码损坏（仅在凑齐完整帧后再解码）。
 #[derive(Default)]
 pub struct SseDecoder {
-    buf: String,
+    buf: Vec<u8>,
 }
 
 impl SseDecoder {
     /// 喂入新字节，返回已完成的 (event, data) 帧
     pub fn push(&mut self, bytes: &[u8]) -> Vec<(Option<String>, String)> {
-        self.buf.push_str(&String::from_utf8_lossy(bytes));
+        self.buf.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some(pos) = self.buf.find("\n\n") {
-            let raw: String = self.buf.drain(..pos + 2).collect();
+        while let Some((pos, sep_len)) = next_boundary(&self.buf) {
+            let raw: Vec<u8> = self.buf.drain(..pos + sep_len).collect();
+            let text = String::from_utf8_lossy(&raw);
             let mut event = None;
             let mut data = String::new();
-            for line in raw.split('\n') {
+            for line in text.split('\n') {
                 let line = line.trim_end_matches('\r');
                 if let Some(rest) = line.strip_prefix("event:") {
                     event = Some(rest.trim().to_string());
@@ -60,6 +64,23 @@ impl SseDecoder {
         }
         frames
     }
+}
+
+/// 在字节缓冲中查找子串位置
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// 定位下一个 SSE 事件边界（空行），兼容 `\n\n` / `\r\n\r\n` / `\r\r`，
+/// 返回 (起始偏移, 分隔符长度)；取最靠前的边界
+fn next_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    let seps: [(&[u8], usize); 3] = [(b"\r\n\r\n", 4), (b"\n\n", 2), (b"\r\r", 2)];
+    seps.iter()
+        .filter_map(|&(sep, len)| find_subslice(buf, sep).map(|pos| (pos, len)))
+        .min_by_key(|&(pos, _)| pos)
 }
 
 /// 跨协议流式桥接器

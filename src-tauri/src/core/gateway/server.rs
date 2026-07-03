@@ -425,8 +425,45 @@ async fn buffered_reply(
         .bytes()
         .await
         .map_err(|e| format!("读取上游响应失败: {}", e))?;
-    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    let canonical = outbound_for(channel_wire).parse_response(&value).ok();
+    let canonical = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => match outbound_for(channel_wire).parse_response(&value) {
+            Ok(c) => Some(c),
+            Err(_) if same_wire => None,
+            Err(e) => {
+                rec.stream = false;
+                rec.status = "error".to_string();
+                rec.status_code = StatusCode::BAD_GATEWAY.as_u16();
+                rec.duration_ms = started.elapsed().as_millis();
+                rec.error = Some(format!("上游响应无法按目标协议解析: {}", e));
+                state.gateway_usage.record(rec);
+                let body_value = json!({
+                    "error": {
+                        "message": format!("上游响应无法按目标协议解析: {}", e),
+                        "type": "upstream_parse_error",
+                    }
+                });
+                let body_bytes = serde_json::to_vec(&body_value).unwrap_or_default();
+                return buffered_response(StatusCode::BAD_GATEWAY, "application/json", body_bytes);
+            }
+        },
+        Err(_) if same_wire => None,
+        Err(e) => {
+            rec.stream = false;
+            rec.status = "error".to_string();
+            rec.status_code = StatusCode::BAD_GATEWAY.as_u16();
+            rec.duration_ms = started.elapsed().as_millis();
+            rec.error = Some(format!("上游返回非 JSON 响应: {}", e));
+            state.gateway_usage.record(rec);
+            let body_value = json!({
+                "error": {
+                    "message": format!("上游返回非 JSON 响应: {}", e),
+                    "type": "upstream_non_json",
+                }
+            });
+            let body_bytes = serde_json::to_vec(&body_value).unwrap_or_default();
+            return buffered_response(StatusCode::BAD_GATEWAY, "application/json", body_bytes);
+        }
+    };
     let usage = canonical
         .as_ref()
         .and_then(|c| c.usage.clone())
@@ -564,7 +601,6 @@ fn build_streaming_reply(
             model: model.clone(),
             ..Default::default()
         };
-
         while let Some(chunk) = upstream.next().await {
             match chunk {
                 Ok(bytes) => {
@@ -577,7 +613,8 @@ fn build_streaming_reply(
                         out
                     } else {
                         for (event, data) in decoder.push(&bytes) {
-                            for ev in out_tr.parse_stream(event.as_deref(), &data, &mut parse) {
+                            let events = out_tr.parse_stream(event.as_deref(), &data, &mut parse);
+                            for ev in events {
                                 match ev {
                                     StreamEvent::Usage(u) => usage = u,
                                     StreamEvent::Error { message } => {
@@ -672,3 +709,4 @@ fn extract_completed_response(sse_text: &str) -> Option<Value> {
     }
     None
 }
+
