@@ -21,8 +21,10 @@ const oauthAccount = {
 test('只返回当前账号可用的第三方凭证模板', () => {
   const templates = getAvailableOpenAIThirdPartyCredentialTemplates(oauthAccount)
 
-  assert.equal(templates.length, 1)
-  assert.equal(templates[0].id, 'cc-switch')
+  assert.deepEqual(
+    templates.map((template) => template.id),
+    ['cc-switch', 'cpa']
+  )
 })
 
 test('生成 cc-switch 凭证内容', () => {
@@ -42,12 +44,25 @@ test('生成 cc-switch 凭证内容', () => {
   })
 })
 
-test('缺少必要 token 时不提供 cc-switch 模板', () => {
+test('生成 CPA 凭证内容', () => {
+  const preview = buildOpenAIThirdPartyCredentialPreview(oauthAccount, 'cpa')
+
+  assert.deepEqual(JSON.parse(preview), {
+    type: 'codex',
+    email: 'user@example.com',
+    account_id: 'fa8d225c-ee2a-4c1f-b4a8-16725740ddf6',
+    access_token: 'access-token-value',
+    refresh_token: 'refresh-token-value',
+    id_token: 'id-token-value'
+  })
+})
+
+test('缺少 access_token 时不提供第三方凭证模板', () => {
   const templates = getAvailableOpenAIThirdPartyCredentialTemplates({
     ...oauthAccount,
     token: {
-      access_token: 'access-token-value',
-      refresh_token: null,
+      access_token: null,
+      refresh_token: 'refresh-token-value',
       id_token: 'id-token-value'
     }
   })
