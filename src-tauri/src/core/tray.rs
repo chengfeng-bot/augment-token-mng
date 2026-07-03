@@ -44,8 +44,19 @@ fn create_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
     let quit_i =
         MenuItem::with_id(app, "quit", "退出", true, None::<&str>).map_err(|e| e.to_string())?;
 
-    Menu::with_items(app, &[&show_i, &platforms_i, &subscriptions_i, &bookmarks_i, &spotlight_i, &emails_i, &quit_i])
-        .map_err(|e| e.to_string())
+    Menu::with_items(
+        app,
+        &[
+            &show_i,
+            &platforms_i,
+            &subscriptions_i,
+            &bookmarks_i,
+            &spotlight_i,
+            &emails_i,
+            &quit_i,
+        ],
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Create the system tray with menu

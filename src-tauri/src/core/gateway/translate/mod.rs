@@ -152,5 +152,10 @@ pub trait OutboundTranslator: Send + Sync {
     /// 渠道非流式响应 → canonical 响应
     fn parse_response(&self, body: &Value) -> Result<CanonicalResponse, String>;
     /// 渠道流式事件（event 名 + data 负载）→ canonical 流事件
-    fn parse_stream(&self, event: Option<&str>, data: &str, st: &mut ParseState) -> Vec<StreamEvent>;
+    fn parse_stream(
+        &self,
+        event: Option<&str>,
+        data: &str,
+        st: &mut ParseState,
+    ) -> Vec<StreamEvent>;
 }

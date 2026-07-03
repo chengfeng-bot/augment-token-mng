@@ -40,10 +40,7 @@ pub async fn get_one_time_auth_token(account: &Account) -> Result<String, String
         .header("sec-fetch-dest", "empty")
         .header("sec-fetch-mode", "cors")
         .header("sec-fetch-site", "same-site")
-        .header(
-            "User-Agent",
-            "Windsurf/1.4.2",
-        );
+        .header("User-Agent", "Windsurf/1.4.2");
 
     let request = if account.is_devin_account() {
         devin::apply_account_auth_headers(request, account)

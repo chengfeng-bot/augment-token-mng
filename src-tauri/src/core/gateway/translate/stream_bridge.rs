@@ -137,7 +137,9 @@ impl StreamBridge {
     pub fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         for (event, data) in self.decoder.push(bytes) {
-            let events = self.out_tr.parse_stream(event.as_deref(), &data, &mut self.parse);
+            let events = self
+                .out_tr
+                .parse_stream(event.as_deref(), &data, &mut self.parse);
             for cev in events {
                 if let StreamEvent::Usage(u) = &cev {
                     self.usage = u.clone();
@@ -167,7 +169,10 @@ impl StreamBridge {
         }
         self.done = true;
         let mut out = Vec::new();
-        for chunk in self.in_tr.render_stream(&StreamEvent::Done, &mut self.render) {
+        for chunk in self
+            .in_tr
+            .render_stream(&StreamEvent::Done, &mut self.render)
+        {
             out.extend(chunk.to_bytes());
         }
         out

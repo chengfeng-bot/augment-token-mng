@@ -126,7 +126,8 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<FirebaseTokenRe
         let error_text = response.text().await.unwrap_or_default();
         if is_referrer_blocked_error(&error_text) {
             Err(referrer_blocked_error("Refresh"))
-        } else if error_text.contains("TOKEN_EXPIRED") || error_text.contains("INVALID_REFRESH_TOKEN")
+        } else if error_text.contains("TOKEN_EXPIRED")
+            || error_text.contains("INVALID_REFRESH_TOKEN")
         {
             Err("Refresh token expired or invalid".to_string())
         } else {

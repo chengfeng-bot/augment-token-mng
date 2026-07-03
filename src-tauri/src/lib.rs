@@ -10,6 +10,7 @@ pub mod platforms {
 pub mod features {
     pub mod mail;
     pub mod raindrop;
+    pub mod webdav;
 }
 
 pub mod core {
@@ -880,6 +881,16 @@ pub fn run() {
             features::raindrop::raindrop_sync,
             features::raindrop::raindrop_full_sync,
             features::raindrop::raindrop_validate_token,
+
+            // WebDAV 备份命令
+            features::webdav::webdav_load_config,
+            features::webdav::webdav_save_config,
+            features::webdav::webdav_delete_config,
+            features::webdav::webdav_test_connection,
+            features::webdav::webdav_backup_now,
+            features::webdav::webdav_list_backups,
+            features::webdav::webdav_restore,
+            features::webdav::webdav_delete_backup,
 
             // Spotlight 快捷搜索命令
             crate::core::spotlight::toggle_spotlight,

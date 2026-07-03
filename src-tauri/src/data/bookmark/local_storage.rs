@@ -1,6 +1,6 @@
 use crate::data::bookmark::models::Bookmark;
 use crate::data::storage::common::{AccountStorage, StorageError, SyncableLocalStorage};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -114,8 +114,7 @@ impl BookmarkLocalStorage {
         Ok(next)
     }
 
-    const INSERT_SQL: &'static str =
-        "INSERT OR REPLACE INTO bookmark_accounts
+    const INSERT_SQL: &'static str = "INSERT OR REPLACE INTO bookmark_accounts
             (id, name, url, description, tag, tag_color, created_at, updated_at, version, deleted)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)";
 
@@ -225,10 +224,7 @@ impl AccountStorage<Bookmark> for BookmarkLocalStorage {
             .query_row(params![id], |row| row.get::<_, i64>(0))?
             > 0;
 
-        conn.execute(
-            "DELETE FROM bookmark_accounts WHERE id = ?1",
-            params![id],
-        )?;
+        conn.execute("DELETE FROM bookmark_accounts WHERE id = ?1", params![id])?;
 
         let version = self.next_version(&conn)?;
         conn.execute(
@@ -239,9 +235,8 @@ impl AccountStorage<Bookmark> for BookmarkLocalStorage {
         // 更新 current_account_id
         let current = self.get_meta(&conn, "current_account_id")?;
         if current.as_deref() == Some(id) {
-            let mut stmt = conn.prepare(
-                "SELECT id FROM bookmark_accounts WHERE deleted = 0 LIMIT 1",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT id FROM bookmark_accounts WHERE deleted = 0 LIMIT 1")?;
             let first_id: Option<String> = stmt.query_row([], |row| row.get(0)).ok();
             self.set_meta(&conn, "current_account_id", &first_id.unwrap_or_default())?;
         }

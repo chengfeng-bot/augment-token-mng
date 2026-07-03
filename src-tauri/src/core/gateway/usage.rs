@@ -91,8 +91,8 @@ impl GatewayUsageStore {
 
     /// 获取连接并设置忙等待，规避并发写入的 SQLITE_BUSY
     fn get_connection(&self) -> Result<Connection, String> {
-        let conn = Connection::open(&self.db_path)
-            .map_err(|e| format!("打开用量数据库失败: {}", e))?;
+        let conn =
+            Connection::open(&self.db_path).map_err(|e| format!("打开用量数据库失败: {}", e))?;
         let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
         Ok(conn)
     }
@@ -210,12 +210,10 @@ impl GatewayUsageStore {
 
     /// 清空全部记录
     pub fn clear(&self) {
-        let result = self
-            .get_connection()
-            .and_then(|conn| {
-                conn.execute("DELETE FROM gateway_usage", [])
-                    .map_err(|e| format!("清空记录失败: {}", e))
-            });
+        let result = self.get_connection().and_then(|conn| {
+            conn.execute("DELETE FROM gateway_usage", [])
+                .map_err(|e| format!("清空记录失败: {}", e))
+        });
         if let Err(e) = result {
             eprintln!("[GatewayUsage] 清空记录失败: {}", e);
         }
@@ -223,20 +221,17 @@ impl GatewayUsageStore {
 
     /// 删除指定渠道的全部用量记录
     pub fn delete_by_channel(&self, channel_id: &str) {
-        let result = self
-            .get_connection()
-            .and_then(|conn| {
-                conn.execute(
-                    "DELETE FROM gateway_usage WHERE channel_id = ?1",
-                    params![channel_id],
-                )
-                .map_err(|e| format!("删除渠道记录失败: {}", e))
-            });
+        let result = self.get_connection().and_then(|conn| {
+            conn.execute(
+                "DELETE FROM gateway_usage WHERE channel_id = ?1",
+                params![channel_id],
+            )
+            .map_err(|e| format!("删除渠道记录失败: {}", e))
+        });
         if let Err(e) = result {
             eprintln!("[GatewayUsage] 删除渠道记录失败: {}", e);
         }
     }
-
 }
 
 /// SQLite 行映射为 `UsageRecord`

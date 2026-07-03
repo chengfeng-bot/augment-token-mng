@@ -364,8 +364,11 @@ pub async fn hme_validate_cookie(state: State<'_, AppState>) -> Result<HmeValida
     let valid = ds_info.is_some() || response.get("webservices").is_some();
 
     let dsid = ds_info.and_then(|info| {
-        info.get("dsid")
-            .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|n| n.to_string())))
+        info.get("dsid").and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        })
     });
 
     let display_name = ds_info.and_then(|info| {
@@ -623,7 +626,10 @@ pub async fn hme_sync(
         .unwrap_or_default();
 
     let dsid_str = current_dsid.as_deref().unwrap_or("");
-    let all_items: Vec<HmeEmailItem> = list.iter().filter_map(|item| map_hme_item(item, dsid_str)).collect();
+    let all_items: Vec<HmeEmailItem> = list
+        .iter()
+        .filter_map(|item| map_hme_item(item, dsid_str))
+        .collect();
 
     if let Some(ref dsid) = current_dsid {
         storage.sync_from_api(&all_items, dsid)?;
@@ -807,5 +813,3 @@ async fn run_batch_action(
         errors,
     })
 }
-
-

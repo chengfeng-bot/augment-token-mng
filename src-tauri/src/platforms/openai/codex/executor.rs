@@ -12,8 +12,8 @@ use warp::http::HeaderMap;
 
 use super::pool::CodexPool;
 use super::upstream::{
-    apply_forward_headers, build_upstream_url, format_transport_error, is_retryable_transport_error,
-    map_upstream_path, should_retry_status, CODEX_UPSTREAM_ORIGIN,
+    CODEX_UPSTREAM_ORIGIN, apply_forward_headers, build_upstream_url, format_transport_error,
+    is_retryable_transport_error, map_upstream_path, should_retry_status,
 };
 use crate::http_client::create_proxy_client_for_streaming;
 use crate::platforms::openai::codex::models::{CodexError, CodexPoolAccount};

@@ -160,14 +160,8 @@ impl<T: SyncableAccount> GenericSQLiteStorage<T> {
         let _guard = self.lock.lock().unwrap();
         let conn = self.get_connection()?;
 
-        conn.execute(
-            &format!("DELETE FROM {}_accounts", T::platform_name()),
-            [],
-        )?;
-        conn.execute(
-            &format!("DELETE FROM {}_deletions", T::platform_name()),
-            [],
-        )?;
+        conn.execute(&format!("DELETE FROM {}_accounts", T::platform_name()), [])?;
+        conn.execute(&format!("DELETE FROM {}_deletions", T::platform_name()), [])?;
 
         for account in &mut accounts {
             account.set_deleted(false);
@@ -211,10 +205,7 @@ impl<T: SyncableAccount> GenericSQLiteStorage<T> {
         let _guard = self.lock.lock().unwrap();
         let conn = self.get_connection()?;
 
-        let mut stmt = conn.prepare(&format!(
-            "SELECT id FROM {}_deletions",
-            T::platform_name()
-        ))?;
+        let mut stmt = conn.prepare(&format!("SELECT id FROM {}_deletions", T::platform_name()))?;
 
         let ids: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
@@ -257,10 +248,7 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericSQLiteStorage<T> {
 
         // 从 deletions 中移除
         conn.execute(
-            &format!(
-                "DELETE FROM {}_deletions WHERE id = ?1",
-                T::platform_name()
-            ),
+            &format!("DELETE FROM {}_deletions WHERE id = ?1", T::platform_name()),
             params![id],
         )?;
 
@@ -334,10 +322,7 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericSQLiteStorage<T> {
             > 0;
 
         conn.execute(
-            &format!(
-                "DELETE FROM {}_accounts WHERE id = ?1",
-                T::platform_name()
-            ),
+            &format!("DELETE FROM {}_accounts WHERE id = ?1", T::platform_name()),
             params![id],
         )?;
 
@@ -357,9 +342,7 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericSQLiteStorage<T> {
                 "SELECT id FROM {}_accounts WHERE deleted = 0 LIMIT 1",
                 T::platform_name()
             ))?;
-            let first_id: Option<String> = stmt
-                .query_row([], |row| row.get(0))
-                .ok();
+            let first_id: Option<String> = stmt.query_row([], |row| row.get(0)).ok();
             self.set_meta(&conn, "current_account_id", &first_id.unwrap_or_default())?;
         }
 
@@ -370,14 +353,8 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericSQLiteStorage<T> {
         let _guard = self.lock.lock().unwrap();
         let conn = self.get_connection()?;
 
-        conn.execute(
-            &format!("DELETE FROM {}_accounts", T::platform_name()),
-            [],
-        )?;
-        conn.execute(
-            &format!("DELETE FROM {}_deletions", T::platform_name()),
-            [],
-        )?;
+        conn.execute(&format!("DELETE FROM {}_accounts", T::platform_name()), [])?;
+        conn.execute(&format!("DELETE FROM {}_deletions", T::platform_name()), [])?;
         self.set_meta(&conn, "version", "0")?;
         self.set_meta(&conn, "current_account_id", "")?;
 
@@ -413,7 +390,8 @@ impl<T: SyncableAccount> SyncableLocalStorage<T> for GenericSQLiteStorage<T> {
         version: i64,
         current_account_id: Option<String>,
     ) -> Result<(), StorageError> {
-        GenericSQLiteStorage::replace_all(self, accounts, deletions, version, current_account_id).await
+        GenericSQLiteStorage::replace_all(self, accounts, deletions, version, current_account_id)
+            .await
     }
 
     fn get_local_version(&self) -> Result<i64, StorageError> {

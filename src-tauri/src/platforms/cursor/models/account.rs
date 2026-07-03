@@ -1,6 +1,6 @@
 use super::TokenData;
 use crate::data::storage::common::SyncableAccount;
-use crate::platforms::cursor::modules::auth::{IndividualUsage};
+use crate::platforms::cursor::modules::auth::IndividualUsage;
 use serde::{Deserialize, Serialize};
 
 /// 机器码信息

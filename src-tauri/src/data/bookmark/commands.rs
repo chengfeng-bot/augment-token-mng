@@ -1,13 +1,11 @@
 use crate::AppState;
+use crate::data::bookmark::Bookmark;
+use crate::data::bookmark::BookmarkLocalStorage;
+use crate::data::bookmark::storage::{BookmarkDualStorage, initialize_bookmark_storage_manager};
 use crate::data::storage::common::{
     AccountStorage, AccountSyncManager as CommonAccountSyncManager, AccountSyncStatus,
     ClientAccountSyncRequest, ServerAccountSyncResponse,
 };
-use crate::data::bookmark::Bookmark;
-use crate::data::bookmark::storage::{
-    BookmarkDualStorage, initialize_bookmark_storage_manager,
-};
-use crate::data::bookmark::BookmarkLocalStorage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
@@ -52,8 +50,7 @@ pub async fn bookmark_list(
         .map_err(|e| format!("Failed to load bookmarks: {}", e))?;
 
     // 过滤掉已删除的
-    let active_bookmarks: Vec<Bookmark> =
-        bookmarks.into_iter().filter(|b| !b.deleted).collect();
+    let active_bookmarks: Vec<Bookmark> = bookmarks.into_iter().filter(|b| !b.deleted).collect();
 
     Ok(BookmarkListResponse {
         bookmarks: active_bookmarks,
@@ -62,9 +59,7 @@ pub async fn bookmark_list(
 
 /// 直接从本地 SQLite 加载书签（不依赖 storage manager 初始化）
 #[tauri::command]
-pub async fn bookmark_load_local(
-    app: tauri::AppHandle,
-) -> Result<BookmarkListResponse, String> {
+pub async fn bookmark_load_local(app: tauri::AppHandle) -> Result<BookmarkListResponse, String> {
     let local_storage = BookmarkLocalStorage::new(&app)
         .map_err(|e| format!("Failed to create Bookmark local storage: {}", e))?;
 
@@ -73,8 +68,7 @@ pub async fn bookmark_load_local(
         .await
         .map_err(|e| format!("Failed to load Bookmark local accounts: {}", e))?;
 
-    let active_bookmarks: Vec<Bookmark> =
-        bookmarks.into_iter().filter(|b| !b.deleted).collect();
+    let active_bookmarks: Vec<Bookmark> = bookmarks.into_iter().filter(|b| !b.deleted).collect();
 
     Ok(BookmarkListResponse {
         bookmarks: active_bookmarks,
@@ -117,7 +111,11 @@ pub async fn bookmark_update(
 
 /// 删除书签
 #[tauri::command]
-pub async fn bookmark_delete(id: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn bookmark_delete(
+    id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let storage_manager = get_bookmark_storage_manager(&app, &state).await?;
 
     storage_manager

@@ -6,14 +6,14 @@
 
 use bytes::Bytes;
 use reqwest::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use warp::http::HeaderMap;
 
 use super::canonical::CanonicalRequest;
 use super::config::{ChannelKind, GatewayChannel};
 use super::translate::stream_bridge::outbound_for;
 use crate::platforms::openai::codex::upstream::{
-    apply_forward_headers, build_upstream_url, format_transport_error, CODEX_UPSTREAM_ORIGIN,
+    CODEX_UPSTREAM_ORIGIN, apply_forward_headers, build_upstream_url, format_transport_error,
 };
 use crate::platforms::openai::modules::{account as account_mod, storage as account_storage};
 use crate::proxy_helper::ProxyClient;
@@ -58,9 +58,10 @@ impl GatewayExecutor {
         req: &CanonicalRequest,
     ) -> Result<reqwest::Response, GatewayError> {
         let body = outbound_for(channel.wire()).build_request(req);
-        let bytes = Bytes::from(serde_json::to_vec(&body).map_err(|e| {
-            GatewayError::Credential(format!("渠道请求体序列化失败: {}", e))
-        })?);
+        let bytes = Bytes::from(
+            serde_json::to_vec(&body)
+                .map_err(|e| GatewayError::Credential(format!("渠道请求体序列化失败: {}", e)))?,
+        );
         self.send(channel, bytes).await
     }
 
@@ -119,9 +120,14 @@ impl GatewayExecutor {
         // 规整为 codex 后端可接受的 Responses 请求体（input 数组化 / 补 instructions / stream=true）
         let body = normalize_codex_body(body);
         // 空入站头：仅注入 codex 鉴权与默认头（User-Agent / OpenAI-Beta / originator）
-        let builder = apply_forward_headers(builder, &HeaderMap::new(), &access_token, &chatgpt_account_id)
-            .header("Content-Type", "application/json")
-            .body(body);
+        let builder = apply_forward_headers(
+            builder,
+            &HeaderMap::new(),
+            &access_token,
+            &chatgpt_account_id,
+        )
+        .header("Content-Type", "application/json")
+        .body(body);
         send_builder(builder).await
     }
 
@@ -241,13 +247,15 @@ fn normalize_openai_compat_body(channel: &GatewayChannel, body: Bytes) -> Bytes 
         }
     }
     if let Some(effort) = obj.get("reasoning_effort").and_then(|v| v.as_str()) {
-        let kind = if effort == "none" { "disabled" } else { "enabled" };
+        let kind = if effort == "none" {
+            "disabled"
+        } else {
+            "enabled"
+        };
         obj.insert("thinking".to_string(), json!({ "type": kind }));
     }
 
-    serde_json::to_vec(&root)
-        .map(Bytes::from)
-        .unwrap_or(body)
+    serde_json::to_vec(&root).map(Bytes::from).unwrap_or(body)
 }
 
 /// 规整 Responses 请求体以兼容 ChatGPT Codex 后端（与 codex 透传一致）：
@@ -281,7 +289,5 @@ fn normalize_codex_body(body: Bytes) -> Bytes {
         );
     }
     obj.insert("stream".to_string(), json!(true));
-    serde_json::to_vec(&root)
-        .map(Bytes::from)
-        .unwrap_or(body)
+    serde_json::to_vec(&root).map(Bytes::from).unwrap_or(body)
 }

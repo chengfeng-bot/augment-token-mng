@@ -104,8 +104,11 @@ pub fn clear_auth_state(db_path: &PathBuf) -> Result<(), String> {
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     // 删除 Firebase 认证数据
-    tx.execute("DELETE FROM ItemTable WHERE key LIKE 'firebase:authUser:%'", [])
-        .map_err(|e| format!("Failed to clear firebase auth state: {}", e))?;
+    tx.execute(
+        "DELETE FROM ItemTable WHERE key LIKE 'firebase:authUser:%'",
+        [],
+    )
+    .map_err(|e| format!("Failed to clear firebase auth state: {}", e))?;
     tx.execute("DELETE FROM ItemTable WHERE key LIKE 'windsurf_auth-%'", [])
         .map_err(|e| format!("Failed to clear windsurf_auth entries: {}", e))?;
     tx.execute("DELETE FROM ItemTable WHERE key LIKE 'secret://%'", [])

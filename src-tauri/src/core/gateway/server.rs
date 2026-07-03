@@ -10,7 +10,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use hyper::{Body, Response};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use warp::http::{HeaderMap, StatusCode};
 use warp::{Filter, Rejection, Reply};
 
@@ -18,11 +18,11 @@ use super::affinity::extract_session_key;
 use super::canonical::{StreamEvent, Usage};
 use super::config::{ChannelKind, GatewayChannel};
 use super::executor::GatewayExecutor;
-use super::translate::stream_bridge::{inbound_for, outbound_for, SseDecoder, StreamBridge};
+use super::translate::stream_bridge::{SseDecoder, StreamBridge, inbound_for, outbound_for};
 use super::translate::{ParseState, Wire};
 use super::usage::UsageRecord;
-use crate::platforms::openai::codex::upstream::should_retry_status;
 use crate::AppState;
+use crate::platforms::openai::codex::upstream::should_retry_status;
 
 mod accumulate;
 use accumulate::StreamAcc;
@@ -50,7 +50,9 @@ pub enum GatewayRejection {
 impl warp::reject::Reject for GatewayRejection {}
 
 /// 按线型注入 filter
-fn with_wire(wire: Wire) -> impl Filter<Extract = (Wire,), Error = std::convert::Infallible> + Clone {
+fn with_wire(
+    wire: Wire,
+) -> impl Filter<Extract = (Wire,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || wire)
 }
 
@@ -103,7 +105,11 @@ fn authorize(headers: &HeaderMap, expected: &str) -> Result<(), GatewayRejection
     let mut provided: Vec<&str> = Vec::new();
     if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
         let t = auth.trim();
-        provided.push(t.strip_prefix("Bearer ").or_else(|| t.strip_prefix("bearer ")).unwrap_or(t));
+        provided.push(
+            t.strip_prefix("Bearer ")
+                .or_else(|| t.strip_prefix("bearer "))
+                .unwrap_or(t),
+        );
     }
     if let Some(key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
         provided.push(key.trim());
@@ -137,7 +143,10 @@ fn rewrite_body_model(body: &Bytes, upstream_model: &str) -> Bytes {
     let Some(obj) = root.as_object_mut() else {
         return body.clone();
     };
-    obj.insert("model".to_string(), Value::String(upstream_model.to_string()));
+    obj.insert(
+        "model".to_string(),
+        Value::String(upstream_model.to_string()),
+    );
     serde_json::to_vec(&root)
         .map(Bytes::from)
         .unwrap_or_else(|_| body.clone())
@@ -169,7 +178,10 @@ async fn handle(
             "请求缺少 model 字段".into(),
         )));
     }
-    let client_stream = value.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let client_stream = value
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
 
     // 门控 + 鉴权 + 候选收集（快照后立即释放锁，避免跨 await 持锁）
     let mut candidates = {
@@ -193,7 +205,10 @@ async fn handle(
     // 会话粘性：同优先级组内把「上次成功渠道」提到最前（候选已按优先级升序，
     // 稳定排序保持其余相对顺序，故粘性不会跨越优先级分组）
     let session_key = extract_session_key(&headers, &value);
-    if let Some(sticky) = session_key.as_ref().and_then(|k| state.gateway_affinity.get(k)) {
+    if let Some(sticky) = session_key
+        .as_ref()
+        .and_then(|k| state.gateway_affinity.get(k))
+    {
         candidates.sort_by(|a, b| {
             a.priority
                 .cmp(&b.priority)
@@ -202,9 +217,12 @@ async fn handle(
     }
 
     // 入站协议 → canonical 请求
-    let canonical = inbound_for(wire)
-        .parse_request(&value)
-        .map_err(|e| reject(GatewayRejection::BadRequest(format!("入站请求解析失败: {}", e))))?;
+    let canonical = inbound_for(wire).parse_request(&value).map_err(|e| {
+        reject(GatewayRejection::BadRequest(format!(
+            "入站请求解析失败: {}",
+            e
+        )))
+    })?;
 
     let client = state
         .gateway_http_client()
@@ -271,8 +289,7 @@ async fn handle(
             }
         }
 
-        let upstream_stream =
-            is_event_stream(&resp) || channel.kind == ChannelKind::CodexOauth;
+        let upstream_stream = is_event_stream(&resp) || channel.kind == ChannelKind::CodexOauth;
         let mut rec = new_record(&model, channel, wire_name(wire), client_stream);
         rec.status_code = status.as_u16();
 
@@ -709,4 +726,3 @@ fn extract_completed_response(sse_text: &str) -> Option<Value> {
     }
     None
 }
-

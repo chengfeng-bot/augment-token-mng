@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -64,9 +64,13 @@ impl OutlookStorage {
         .map_err(|e| format!("Failed to create Outlook table: {}", e))?;
 
         // 迁移: 为旧表补齐新增列
-        let _ = conn.execute_batch("ALTER TABLE outlook_credentials ADD COLUMN tag TEXT DEFAULT NULL;");
-        let _ = conn.execute_batch("ALTER TABLE outlook_credentials ADD COLUMN tag_color TEXT DEFAULT NULL;");
-        let _ = conn.execute_batch("ALTER TABLE outlook_credentials ADD COLUMN status TEXT DEFAULT NULL;");
+        let _ =
+            conn.execute_batch("ALTER TABLE outlook_credentials ADD COLUMN tag TEXT DEFAULT NULL;");
+        let _ = conn.execute_batch(
+            "ALTER TABLE outlook_credentials ADD COLUMN tag_color TEXT DEFAULT NULL;",
+        );
+        let _ = conn
+            .execute_batch("ALTER TABLE outlook_credentials ADD COLUMN status TEXT DEFAULT NULL;");
 
         Ok(())
     }
@@ -137,11 +141,7 @@ impl OutlookStorage {
         Ok(affected > 0)
     }
 
-    pub fn update_refresh_token(
-        &self,
-        email: &str,
-        new_refresh_token: &str,
-    ) -> Result<(), String> {
+    pub fn update_refresh_token(&self, email: &str, new_refresh_token: &str) -> Result<(), String> {
         let conn = self.get_connection()?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(

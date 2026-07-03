@@ -1,5 +1,5 @@
 use crate::antigravity::models::DeviceProfile;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{Rng, distributions::Alphanumeric};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -98,11 +98,17 @@ pub fn write_profile(storage_path: &Path, profile: &DeviceProfile) -> Result<(),
         return Err("storage.json top-level value is not an object".to_string());
     }
 
-    if !json.get("telemetry").map_or(false, |value| value.is_object()) {
+    if !json
+        .get("telemetry")
+        .map_or(false, |value| value.is_object())
+    {
         json["telemetry"] = serde_json::json!({});
     }
 
-    if let Some(telemetry) = json.get_mut("telemetry").and_then(|value| value.as_object_mut()) {
+    if let Some(telemetry) = json
+        .get_mut("telemetry")
+        .and_then(|value| value.as_object_mut())
+    {
         telemetry.insert(
             "machineId".to_string(),
             Value::String(profile.machine_id.clone()),

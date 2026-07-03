@@ -13,9 +13,9 @@ impl AccountDbMapper<Account> for CursorAccountMapper {
             .and_then(|v| serde_json::from_value(v).ok());
 
         // 解析 individual_usage JSON 字段
-        let individual_usage: Option<crate::platforms::cursor::modules::auth::IndividualUsage> = row
-            .get::<_, Option<serde_json::Value>>(20)
-            .and_then(|v| serde_json::from_value(v).ok());
+        let individual_usage: Option<crate::platforms::cursor::modules::auth::IndividualUsage> =
+            row.get::<_, Option<serde_json::Value>>(20)
+                .and_then(|v| serde_json::from_value(v).ok());
 
         Ok(Account {
             id: row.get(0),

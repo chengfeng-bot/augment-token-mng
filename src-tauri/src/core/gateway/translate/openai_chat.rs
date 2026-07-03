@@ -3,13 +3,11 @@
 //! 既作入站协议，也作 `openai_compat`（chat 线型）渠道的出站协议。canonical 即 Chat，
 //! 故请求/响应映射接近恒等。
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::common;
 use super::{InboundTranslator, OutboundTranslator, ParseState, RenderState, SseChunk};
-use crate::core::gateway::canonical::{
-    CanonicalRequest, CanonicalResponse, StreamEvent, Usage,
-};
+use crate::core::gateway::canonical::{CanonicalRequest, CanonicalResponse, StreamEvent, Usage};
 
 pub struct OpenAiChat;
 
@@ -94,7 +92,11 @@ impl InboundTranslator for OpenAiChat {
                 common::tool_calls_to_value(&resp.tool_calls),
             );
         }
-        let id = if resp.id.is_empty() { gen_id() } else { resp.id.clone() };
+        let id = if resp.id.is_empty() {
+            gen_id()
+        } else {
+            resp.id.clone()
+        };
         json!({
             "id": id,
             "object": "chat.completion",
@@ -123,14 +125,21 @@ impl InboundTranslator for OpenAiChat {
         }
         match ev {
             StreamEvent::ContentDelta(t) => {
-                out.push(SseChunk::data(chunk(st, json!({"content": t}), None).to_string()));
+                out.push(SseChunk::data(
+                    chunk(st, json!({"content": t}), None).to_string(),
+                ));
             }
             StreamEvent::ReasoningDelta(t) => {
                 out.push(SseChunk::data(
                     chunk(st, json!({"reasoning_content": t}), None).to_string(),
                 ));
             }
-            StreamEvent::ToolCallDelta { index, id, name, arguments } => {
+            StreamEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
                 let mut f = Map::new();
                 if let Some(n) = name {
                     f.insert("name".into(), json!(n));
@@ -159,7 +168,9 @@ impl InboundTranslator for OpenAiChat {
             }
             StreamEvent::Done => {
                 let finish = st.finish_reason.clone().unwrap_or_else(|| "stop".into());
-                out.push(SseChunk::data(chunk(st, json!({}), Some(&finish)).to_string()));
+                out.push(SseChunk::data(
+                    chunk(st, json!({}), Some(&finish)).to_string(),
+                ));
                 if let Some(u) = &st.usage {
                     let mut envelope = chunk(st, json!({}), None);
                     envelope["choices"] = json!([]);
@@ -215,8 +226,16 @@ impl OutboundTranslator for OpenAiChat {
             .map(common::parse_tool_calls)
             .unwrap_or_default();
         Ok(CanonicalResponse {
-            id: body.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            model: body.get("model").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            id: body
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            model: body
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             content,
             reasoning,
             tool_calls,
@@ -228,7 +247,12 @@ impl OutboundTranslator for OpenAiChat {
         })
     }
 
-    fn parse_stream(&self, _event: Option<&str>, data: &str, _st: &mut ParseState) -> Vec<StreamEvent> {
+    fn parse_stream(
+        &self,
+        _event: Option<&str>,
+        data: &str,
+        _st: &mut ParseState,
+    ) -> Vec<StreamEvent> {
         let trimmed = data.trim();
         if trimmed == "[DONE]" {
             return vec![StreamEvent::Done];
@@ -261,7 +285,8 @@ impl OutboundTranslator for OpenAiChat {
             }
             if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for (i, tc) in tcs.iter().enumerate() {
-                    let index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(i as u64) as usize;
+                    let index =
+                        tc.get("index").and_then(|v| v.as_u64()).unwrap_or(i as u64) as usize;
                     events.push(StreamEvent::ToolCallDelta {
                         index,
                         id: tc.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -291,4 +316,3 @@ impl OutboundTranslator for OpenAiChat {
         events
     }
 }
-

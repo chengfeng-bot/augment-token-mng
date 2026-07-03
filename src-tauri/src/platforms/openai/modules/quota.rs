@@ -121,7 +121,8 @@ pub async fn fetch_reset_credits(
         .get(CHATGPT_RESET_CREDITS_URL)
         .header("authorization", format!("Bearer {}", access_token))
         .header("accept", "application/json");
-    if let Some(account_id) = resolve_chatgpt_account_id(chatgpt_account_id, access_token).as_deref()
+    if let Some(account_id) =
+        resolve_chatgpt_account_id(chatgpt_account_id, access_token).as_deref()
     {
         builder = builder.header("chatgpt-account-id", account_id);
     }
@@ -163,7 +164,8 @@ pub async fn consume_reset_credit(
         .header("authorization", format!("Bearer {}", access_token))
         .header("accept", "application/json")
         .header("content-type", "application/json");
-    if let Some(account_id) = resolve_chatgpt_account_id(chatgpt_account_id, access_token).as_deref()
+    if let Some(account_id) =
+        resolve_chatgpt_account_id(chatgpt_account_id, access_token).as_deref()
     {
         builder = builder.header("chatgpt-account-id", account_id);
     }

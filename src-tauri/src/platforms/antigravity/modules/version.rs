@@ -54,7 +54,10 @@ fn get_version_windows(exe_path: &PathBuf) -> Result<AntigravityVersion, String>
         .args([
             "-NoProfile",
             "-Command",
-            &format!("(Get-Item '{}').VersionInfo.FileVersion", exe_path.display()),
+            &format!(
+                "(Get-Item '{}').VersionInfo.FileVersion",
+                exe_path.display()
+            ),
         ])
         .output()
         .map_err(|e| format!("Failed to execute PowerShell: {}", e))?;
@@ -65,7 +68,10 @@ fn get_version_windows(exe_path: &PathBuf) -> Result<AntigravityVersion, String>
 
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let version = extract_semver(&raw).ok_or_else(|| {
-        format!("Version information not found in executable output: {}", raw)
+        format!(
+            "Version information not found in executable output: {}",
+            raw
+        )
     })?;
 
     Ok(AntigravityVersion {
@@ -91,7 +97,10 @@ fn get_version_linux(exe_path: &PathBuf) -> Result<AntigravityVersion, String> {
 
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let version = extract_semver(&raw).ok_or_else(|| {
-        format!("Version information not found in executable output: {}", raw)
+        format!(
+            "Version information not found in executable output: {}",
+            raw
+        )
     })?;
 
     Ok(AntigravityVersion {
@@ -144,7 +153,10 @@ mod tests {
     #[test]
     fn extract_semver_handles_four_segment_file_version() {
         assert_eq!(extract_semver("1.16.5.0"), Some("1.16.5".to_string()));
-        assert_eq!(extract_semver("version 1.107.0"), Some("1.107.0".to_string()));
+        assert_eq!(
+            extract_semver("version 1.107.0"),
+            Some("1.107.0".to_string())
+        );
     }
 
     #[test]

@@ -1,8 +1,6 @@
 use crate::AppState;
-use crate::data::storage::common::{
-    GenericPostgreSQLStorage, SQLiteDualStorage,
-};
 use crate::data::bookmark::{Bookmark, BookmarkLocalStorage, BookmarkMapper};
+use crate::data::storage::common::{GenericPostgreSQLStorage, SQLiteDualStorage};
 use std::sync::Arc;
 use tauri::State;
 
@@ -21,18 +19,13 @@ pub async fn initialize_bookmark_storage_manager(
     let postgres_storage = {
         let db_manager_guard = state.database_manager.lock().unwrap();
         if let Some(db_manager) = db_manager_guard.as_ref() {
-            Some(Arc::new(BookmarkPostgreSQLStorage::new(
-                db_manager.clone(),
-            )))
+            Some(Arc::new(BookmarkPostgreSQLStorage::new(db_manager.clone())))
         } else {
             None
         }
     };
 
-    let dual_storage = Arc::new(BookmarkDualStorage::new(
-        local_storage,
-        postgres_storage,
-    ));
+    let dual_storage = Arc::new(BookmarkDualStorage::new(local_storage, postgres_storage));
 
     *state.bookmark_storage_manager.lock().unwrap() = Some(dual_storage);
 

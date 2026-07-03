@@ -111,10 +111,7 @@ fn apply_fast_mode_to_codex_config_toml(
             toml::Value::String("fast".to_string()),
         );
         let mut features = toml::Table::new();
-        features.insert(
-            "fast_mode".to_string(),
-            toml::Value::Boolean(true),
-        );
+        features.insert("fast_mode".to_string(), toml::Value::Boolean(true));
         config.insert("features".to_string(), toml::Value::Table(features));
     } else {
         config.remove("service_tier");
@@ -123,8 +120,7 @@ fn apply_fast_mode_to_codex_config_toml(
 
     let content = toml::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config.toml: {}", e))?;
-    fs::write(&config_path, content)
-        .map_err(|e| format!("Failed to write config.toml: {}", e))?;
+    fs::write(&config_path, content).map_err(|e| format!("Failed to write config.toml: {}", e))?;
     Ok(())
 }
 
@@ -200,12 +196,7 @@ fn current_api_server_port(state: &AppState) -> u16 {
 
 async fn apply_periodic_tasks(app: tauri::AppHandle, state: &AppState, config: &CodexServerConfig) {
     if config.enabled && config.quota_refresh_enabled {
-        start_periodic_quota_refresh(
-            app,
-            state,
-            config.quota_refresh_interval_seconds,
-        )
-        .await;
+        start_periodic_quota_refresh(app, state, config.quota_refresh_interval_seconds).await;
     } else {
         stop_periodic_quota_refresh().await;
     }
@@ -503,8 +494,6 @@ pub async fn get_codex_model_stats(
     }
 }
 
-
-
 #[tauri::command]
 pub async fn clear_codex_logs(state: State<'_, AppState>) -> Result<(), String> {
     let logger = state.codex_logger.lock().unwrap().clone();
@@ -544,10 +533,7 @@ pub async fn set_codex_pool_strategy(
     }
 }
 
-
-
 #[tauri::command]
-
 
 pub async fn set_codex_selected_account(
     app: tauri::AppHandle,
@@ -813,19 +799,20 @@ async fn start_periodic_quota_refresh(
             interval.tick().await;
             println!("[Codex] Starting periodic quota refresh...");
 
-            let accounts = match crate::platforms::openai::modules::storage::list_accounts(&app).await
-            {
-                Ok(accs) => accs,
-                Err(e) => {
-                    eprintln!("[Codex] Failed to list accounts for quota refresh: {}", e);
-                    continue;
-                }
-            };
+            let accounts =
+                match crate::platforms::openai::modules::storage::list_accounts(&app).await {
+                    Ok(accs) => accs,
+                    Err(e) => {
+                        eprintln!("[Codex] Failed to list accounts for quota refresh: {}", e);
+                        continue;
+                    }
+                };
 
             let mut refreshed = 0;
             let mut changed_account_ids = std::collections::BTreeSet::new();
             for mut account in accounts {
-                if account.account_type == crate::platforms::openai::models::account::AccountType::API
+                if account.account_type
+                    == crate::platforms::openai::models::account::AccountType::API
                 {
                     continue;
                 }
@@ -858,7 +845,10 @@ async fn start_periodic_quota_refresh(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[Codex] Failed to refresh quota for {}: {}", account.email, e);
+                        eprintln!(
+                            "[Codex] Failed to refresh quota for {}: {}",
+                            account.email, e
+                        );
                         // 与 openai_fetch_quota 一致：失败时仍保存（如 refresh_token_reused 已置 rt_invalid）
                         match crate::platforms::openai::modules::storage::save_account(
                             &app, &account,
@@ -886,7 +876,8 @@ async fn start_periodic_quota_refresh(
                 }
             }
 
-            if let Ok(accounts) = crate::platforms::openai::modules::storage::list_accounts(&app).await
+            if let Ok(accounts) =
+                crate::platforms::openai::modules::storage::list_accounts(&app).await
             {
                 pool_ref.refresh_from_accounts(&accounts).await;
             }

@@ -2,10 +2,10 @@
 //!
 //! 管理用于 Codex API 请求的 OAuth 账号池，支持轮询和单个选择策略
 
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use rand::Rng;
 
 use super::models::{CodexPoolAccount, PoolStatus, PoolStrategy};
 
@@ -130,7 +130,11 @@ impl CodexPool {
 
         let account = selected_id
             .as_ref()
-            .and_then(|id| pool.iter().find(|a| a.id == *id && a.is_available()).cloned())
+            .and_then(|id| {
+                pool.iter()
+                    .find(|a| a.id == *id && a.is_available())
+                    .cloned()
+            })
             .or_else(|| {
                 // 选中账号不可用时，回退到第一个可用账号，避免服务被无声卡死。
                 pool.iter().find(|a| a.is_available()).cloned()
@@ -329,7 +333,8 @@ impl CodexPool {
                     );
                     if keep_cooldown {
                         // 如果 token 已被刷新（expires_at 变化），说明凭证已更新，清除 "unauthorized" 冷却
-                        let token_refreshed = prev.unavailable_reason.as_deref() == Some("unauthorized")
+                        let token_refreshed = prev.unavailable_reason.as_deref()
+                            == Some("unauthorized")
                             && next.expires_at > prev.expires_at;
                         if token_refreshed {
                             next.cooldown_until = None;
@@ -406,7 +411,8 @@ mod tests {
         pool.add_account(sample_pool_account("primary")).await;
         pool.add_account(sample_pool_account("fallback")).await;
         pool.set_strategy(PoolStrategy::Single).await;
-        pool.set_selected_account_id("missing-in-pool".to_string()).await;
+        pool.set_selected_account_id("missing-in-pool".to_string())
+            .await;
 
         let selected = pool.next_account().await.unwrap();
         assert_eq!(selected.id, "primary");

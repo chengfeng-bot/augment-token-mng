@@ -134,7 +134,14 @@ pub fn create_oauth_token_info(
     id_token: Option<&str>,
     email: Option<&str>,
 ) -> Vec<u8> {
-    create_oauth_info(access_token, refresh_token, expiry, is_gcp_tos, id_token, email)
+    create_oauth_info(
+        access_token,
+        refresh_token,
+        expiry,
+        is_gcp_tos,
+        id_token,
+        email,
+    )
 }
 
 /// 创建新格式 OAuthTokenInfo 消息，不包含外层 Field 6 包装。
@@ -179,7 +186,7 @@ pub fn create_oauth_info(
 
 /// 创建统一状态同步条目：Topic -> DataEntry -> Row(base64 payload)。
 pub fn create_unified_state_entry(sentinel_key: &str, payload: &[u8]) -> String {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
 
     let row = encode_string_field(1, &general_purpose::STANDARD.encode(payload));
     let data_entry = [

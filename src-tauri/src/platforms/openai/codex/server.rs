@@ -679,11 +679,7 @@ fn build_streaming_response_with_metrics(
         let log = build_request_log(
             &meta,
             log_model,
-            if is_success {
-                "success"
-            } else {
-                "error"
-            },
+            if is_success { "success" } else { "error" },
             usage,
             error_message,
         );

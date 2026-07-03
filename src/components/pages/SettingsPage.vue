@@ -190,6 +190,7 @@
     <ApiServerStatus v-if="showApiServerModal" @close="showApiServerModal = false" />
     <ProxyConfig v-if="showProxyModal" @close="showProxyModal = false" />
     <DatabaseConfig v-if="showDatabaseModal" @close="showDatabaseModal = false" />
+    <WebDavConfig v-if="showWebDavModal" @close="showWebDavModal = false" @saved="handleWebDavSaved" @deleted="handleWebDavSaved" />
     <FontConfig v-if="showFontModal" @close="showFontModal = false" />
     <TelegramConfig v-if="showTelegramModal" @close="showTelegramModal = false" @saved="handleTelegramSaved" />
   </div>
@@ -203,6 +204,7 @@ import { useSettingsStore } from '../../stores/settings'
 import ApiServerStatus from '../settings/ApiServerStatus.vue'
 import ProxyConfig from '../settings/ProxyConfig.vue'
 import DatabaseConfig from '../settings/DatabaseConfig.vue'
+import WebDavConfig from '../settings/WebDavConfig.vue'
 import FontConfig from '../settings/FontConfig.vue'
 import TelegramConfig from '../settings/TelegramConfig.vue'
 
@@ -216,6 +218,7 @@ const settingsStore = useSettingsStore()
 const showApiServerModal = ref(false)
 const showProxyModal = ref(false)
 const showDatabaseModal = ref(false)
+const showWebDavModal = ref(false)
 const showFontModal = ref(false)
 const showTelegramModal = ref(false)
 
@@ -227,6 +230,7 @@ const appVersion = computed(() => settingsStore.appVersion)
 const serverStatus = computed(() => settingsStore.serverStatus)
 const proxyEnabled = computed(() => settingsStore.proxyConfig.enabled)
 const databaseConnected = computed(() => settingsStore.databaseConfig.enabled)
+const webdavEnabled = computed(() => settingsStore.webdavConfig.enabled)
 const hasCustomFont = computed(() => !!localStorage.getItem('user-font-sans'))
 const trayEnabled = computed(() => settingsStore.trayEnabled)
 const isMacOS = computed(() => settingsStore.isMacOS)
@@ -353,6 +357,14 @@ const configCards = computed(() => [
     showDot: true
   },
   {
+    id: 'webdav',
+    titleKey: 'webdavConfig.title',
+    isActive: webdavEnabled.value,
+    activeTextKey: 'webdavConfig.enabled',
+    inactiveTextKey: 'webdavConfig.disabled',
+    showDot: true
+  },
+  {
     id: 'font',
     titleKey: 'fontConfig.title',
     isActive: hasCustomFont.value,
@@ -381,6 +393,9 @@ const openModal = (cardId) => {
       break
     case 'database':
       showDatabaseModal.value = true
+      break
+    case 'webdav':
+      showWebDavModal.value = true
       break
     case 'font':
       showFontModal.value = true
@@ -460,6 +475,10 @@ const initSpotlightShortcut = async () => {
 const handleTelegramSaved = () => {
   // Reload telegram config after saving
   settingsStore.loadTelegramConfig(true)
+}
+
+const handleWebDavSaved = () => {
+  settingsStore.loadWebdavConfig(true)
 }
 
 const checkForUpdates = async () => {

@@ -1,5 +1,5 @@
-use crate::core::http_client::create_http_client;
 use super::models::*;
+use crate::core::http_client::create_http_client;
 
 const API_BASE: &str = "https://api.raindrop.io/rest/v1";
 const PAGE_SIZE: usize = 50;

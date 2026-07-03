@@ -203,10 +203,7 @@ pub fn get_main_js_path(custom_exe_path: Option<&str>) -> Result<PathBuf, String
                 return Ok(bundled_main_js);
             }
 
-            let bundled_exe = custom_path
-                .join("Contents")
-                .join("MacOS")
-                .join("Cursor");
+            let bundled_exe = custom_path.join("Contents").join("MacOS").join("Cursor");
             if bundled_exe.exists() {
                 exe_path = bundled_exe;
             }
@@ -484,7 +481,10 @@ pub fn check_auto_update_disabled(custom_exe_path: Option<&str>) -> Result<bool,
     let main_js_path = get_main_js_path(custom_exe_path)?;
 
     if !main_js_path.exists() {
-        return Err(format!("main.js file not found: {}", main_js_path.display()));
+        return Err(format!(
+            "main.js file not found: {}",
+            main_js_path.display()
+        ));
     }
 
     let content =
@@ -505,7 +505,10 @@ pub fn disable_auto_update(custom_exe_path: Option<&str>) -> Result<(), String> 
     let main_js_path = get_main_js_path(custom_exe_path)?;
 
     if !main_js_path.exists() {
-        return Err(format!("main.js file not found: {}", main_js_path.display()));
+        return Err(format!(
+            "main.js file not found: {}",
+            main_js_path.display()
+        ));
     }
 
     let content =
@@ -538,7 +541,10 @@ pub fn enable_auto_update(custom_exe_path: Option<&str>) -> Result<(), String> {
     let main_js_path = get_main_js_path(custom_exe_path)?;
 
     if !main_js_path.exists() {
-        return Err(format!("main.js file not found: {}", main_js_path.display()));
+        return Err(format!(
+            "main.js file not found: {}",
+            main_js_path.display()
+        ));
     }
 
     let content =

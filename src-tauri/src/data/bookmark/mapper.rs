@@ -1,5 +1,5 @@
-use crate::data::storage::common::{AccountDbMapper, StorageError};
 use crate::data::bookmark::models::Bookmark;
+use crate::data::storage::common::{AccountDbMapper, StorageError};
 use tokio_postgres::Row;
 
 /// 书签数据库映射器

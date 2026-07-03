@@ -538,10 +538,7 @@ pub fn validate_cursor_path(path: &str) -> Result<bool, String> {
 
     #[cfg(target_os = "linux")]
     {
-        let file_name = path_buf
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path_buf.file_name().and_then(|n| n.to_str()).unwrap_or("");
         return Ok(file_name.eq_ignore_ascii_case("cursor"));
     }
 }

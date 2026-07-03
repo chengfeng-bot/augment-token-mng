@@ -23,6 +23,16 @@ export const useSettingsStore = defineStore('settings', () => {
     username: 'postgres',
     ssl_mode: 'require'
   })
+  const webdavConfig = ref({
+    enabled: false,
+    vendor: 'jianguoyun',
+    url: 'https://dav.jianguoyun.com/dav/',
+    username: '',
+    remoteDir: 'ATM',
+    retentionCount: 1,
+    hasPassword: false
+  })
+  const webdavBackups = ref([])
   
   // Tray state - read from localStorage
   const trayEnabled = ref(localStorage.getItem('tray_enabled') === 'true')
@@ -47,6 +57,11 @@ export const useSettingsStore = defineStore('settings', () => {
   const isLoadingDatabase = ref(false)
   const isLoadingTray = ref(false)
   const isLoadingTelegram = ref(false)
+  const isLoadingWebdav = ref(false)
+  const isTestingWebdav = ref(false)
+  const isBackingUpWebdav = ref(false)
+  const isRestoringWebdav = ref(false)
+  const isDeletingWebdavBackup = ref(false)
 
   // 数据是否已加载标记 (应用生命周期内只加载一次)
   const versionLoaded = ref(false)
@@ -54,6 +69,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const proxyLoaded = ref(false)
   const databaseLoaded = ref(false)
   const telegramLoaded = ref(false)
+  const webdavLoaded = ref(false)
 
   // Actions
   const loadAppVersion = async (force = false) => {
@@ -170,6 +186,157 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  const loadWebdavConfig = async (force = false) => {
+    if (!force && webdavLoaded.value) {
+      return webdavConfig.value
+    }
+
+    isLoadingWebdav.value = true
+    try {
+      const config = await invoke('webdav_load_config')
+      webdavConfig.value = {
+        enabled: config?.enabled || false,
+        vendor: config?.vendor || 'jianguoyun',
+        url: config?.url || 'https://dav.jianguoyun.com/dav/',
+        username: config?.username || '',
+        remoteDir: config?.remoteDir || 'ATM',
+        retentionCount: config?.retentionCount || 1,
+        hasPassword: config?.hasPassword || false,
+        vendorInfo: config?.vendorInfo || null
+      }
+      webdavLoaded.value = true
+      return webdavConfig.value
+    } catch (error) {
+      console.error('Failed to load WebDAV config:', error)
+      webdavConfig.value = {
+        enabled: false,
+        vendor: 'jianguoyun',
+        url: 'https://dav.jianguoyun.com/dav/',
+        username: '',
+        remoteDir: 'ATM',
+        retentionCount: 1,
+        hasPassword: false
+      }
+      throw error
+    } finally {
+      isLoadingWebdav.value = false
+    }
+  }
+
+  const saveWebdavConfig = async (request) => {
+    isLoadingWebdav.value = true
+    try {
+      const config = await invoke('webdav_save_config', { request })
+      webdavConfig.value = {
+        enabled: config?.enabled || false,
+        vendor: config?.vendor || request.vendor || 'jianguoyun',
+        url: config?.url || request.url || '',
+        username: config?.username || request.username || '',
+        remoteDir: config?.remoteDir || request.remoteDir || 'ATM',
+        retentionCount: config?.retentionCount || request.retentionCount || 1,
+        hasPassword: config?.hasPassword || Boolean(request.password),
+        vendorInfo: config?.vendorInfo || null
+      }
+      webdavLoaded.value = true
+      return webdavConfig.value
+    } catch (error) {
+      console.error('Failed to save WebDAV config:', error)
+      throw error
+    } finally {
+      isLoadingWebdav.value = false
+    }
+  }
+
+  const deleteWebdavConfig = async () => {
+    isLoadingWebdav.value = true
+    try {
+      await invoke('webdav_delete_config')
+      webdavConfig.value = {
+        enabled: false,
+        vendor: 'jianguoyun',
+        url: 'https://dav.jianguoyun.com/dav/',
+        username: '',
+        remoteDir: 'ATM',
+        retentionCount: 1,
+        hasPassword: false
+      }
+      webdavBackups.value = []
+      webdavLoaded.value = true
+    } catch (error) {
+      console.error('Failed to delete WebDAV config:', error)
+      throw error
+    } finally {
+      isLoadingWebdav.value = false
+    }
+  }
+
+  const testWebdavConnection = async (request) => {
+    isTestingWebdav.value = true
+    try {
+      await invoke('webdav_test_connection', { request })
+      return true
+    } catch (error) {
+      console.error('Failed to test WebDAV connection:', error)
+      throw error
+    } finally {
+      isTestingWebdav.value = false
+    }
+  }
+
+  const backupWebdavNow = async (passphrase) => {
+    isBackingUpWebdav.value = true
+    try {
+      const result = await invoke('webdav_backup_now', { passphrase })
+      await listWebdavBackups()
+      return result
+    } catch (error) {
+      console.error('Failed to create WebDAV backup:', error)
+      throw error
+    } finally {
+      isBackingUpWebdav.value = false
+    }
+  }
+
+  const listWebdavBackups = async () => {
+    isLoadingWebdav.value = true
+    try {
+      const backups = await invoke('webdav_list_backups')
+      webdavBackups.value = Array.isArray(backups) ? backups : []
+      return webdavBackups.value
+    } catch (error) {
+      console.error('Failed to list WebDAV backups:', error)
+      webdavBackups.value = []
+      throw error
+    } finally {
+      isLoadingWebdav.value = false
+    }
+  }
+
+  const restoreWebdavBackup = async ({ fileName, passphrase }) => {
+    isRestoringWebdav.value = true
+    try {
+      return await invoke('webdav_restore', { fileName, passphrase })
+    } catch (error) {
+      console.error('Failed to restore WebDAV backup:', error)
+      throw error
+    } finally {
+      isRestoringWebdav.value = false
+    }
+  }
+
+  const deleteWebdavBackup = async (fileName) => {
+    isDeletingWebdavBackup.value = true
+    try {
+      await invoke('webdav_delete_backup', { fileName })
+      webdavBackups.value = webdavBackups.value.filter(backup => backup.name !== fileName)
+    } catch (error) {
+      console.error('Failed to delete WebDAV backup:', error)
+      throw error
+    } finally {
+      isDeletingWebdavBackup.value = false
+    }
+  }
+
   // Toggle tray
   const toggleTray = async (enabled) => {
     isLoadingTray.value = true
@@ -262,7 +429,8 @@ export const useSettingsStore = defineStore('settings', () => {
       loadServerStatus(force),
       loadProxyConfig(force),
       loadDatabaseConfig(force),
-      loadTelegramConfig(force)
+      loadTelegramConfig(force),
+      loadWebdavConfig(force)
     ])
   }
 
@@ -272,6 +440,8 @@ export const useSettingsStore = defineStore('settings', () => {
     serverStatus,
     proxyConfig,
     databaseConfig,
+    webdavConfig,
+    webdavBackups,
     trayEnabled,
     isMacOS,
     dockVisible,
@@ -284,12 +454,25 @@ export const useSettingsStore = defineStore('settings', () => {
     isLoadingDatabase,
     isLoadingTray,
     isLoadingTelegram,
+    isLoadingWebdav,
+    isTestingWebdav,
+    isBackingUpWebdav,
+    isRestoringWebdav,
+    isDeletingWebdavBackup,
     
     // Actions
     loadAppVersion,
     loadServerStatus,
     loadProxyConfig,
     loadDatabaseConfig,
+    loadWebdavConfig,
+    saveWebdavConfig,
+    deleteWebdavConfig,
+    testWebdavConnection,
+    backupWebdavNow,
+    listWebdavBackups,
+    restoreWebdavBackup,
+    deleteWebdavBackup,
     loadTelegramConfig,
     loadAllSettings,
     toggleTray,

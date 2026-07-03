@@ -1,5 +1,6 @@
+pub mod archive;
 pub mod client;
 pub mod commands;
-pub mod models;
+pub mod config;
 
 pub use commands::*;

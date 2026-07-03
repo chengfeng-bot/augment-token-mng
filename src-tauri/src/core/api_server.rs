@@ -873,9 +873,11 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Rejection> {
                 "Gateway is disabled".to_string(),
                 "gateway_disabled",
             ),
-            GatewayRejection::Unauthorized(msg) => {
-                (warp::http::StatusCode::UNAUTHORIZED, msg.clone(), "unauthorized")
-            }
+            GatewayRejection::Unauthorized(msg) => (
+                warp::http::StatusCode::UNAUTHORIZED,
+                msg.clone(),
+                "unauthorized",
+            ),
             GatewayRejection::BadRequest(msg) => (
                 warp::http::StatusCode::BAD_REQUEST,
                 msg.clone(),
@@ -886,9 +888,11 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Rejection> {
                 msg.clone(),
                 "no_available_channel",
             ),
-            GatewayRejection::Upstream(msg) => {
-                (warp::http::StatusCode::BAD_GATEWAY, msg.clone(), "upstream_error")
-            }
+            GatewayRejection::Upstream(msg) => (
+                warp::http::StatusCode::BAD_GATEWAY,
+                msg.clone(),
+                "upstream_error",
+            ),
             GatewayRejection::Internal(msg) => (
                 warp::http::StatusCode::INTERNAL_SERVER_ERROR,
                 msg.clone(),

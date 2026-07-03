@@ -23,7 +23,6 @@ fn parse_jwt_exp(token: &str) -> Option<i64> {
     json.get("exp")?.as_i64()
 }
 
-
 /// 从 session token 中解析 exp 字段
 /// session token 格式: user_id%3A%3A<JWT> 或 user_id::<JWT>
 fn parse_session_token_exp(session_token: &str) -> Option<i64> {
@@ -269,9 +268,7 @@ pub async fn cursor_validate_account(app: AppHandle, account_id: String) -> Resu
 
 /// 获取用量摘要
 #[tauri::command]
-pub async fn cursor_get_usage_summary(
-    session_token: String,
-) -> Result<auth::UsageSummary, String> {
+pub async fn cursor_get_usage_summary(session_token: String) -> Result<auth::UsageSummary, String> {
     auth::get_usage_summary(&session_token).await
 }
 
@@ -420,8 +417,8 @@ pub async fn cursor_add_account_with_access_token(
         .or(profile.membership_type);
 
     // 2. 解析 JWT 过期时间
-    let expiry_timestamp = parse_jwt_exp(&access_token)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp() + 86400 * 60);
+    let expiry_timestamp =
+        parse_jwt_exp(&access_token).unwrap_or_else(|| chrono::Utc::now().timestamp() + 86400 * 60);
 
     // 3. 创建 Token（refresh_token = access_token，无 session）
     let token = TokenData::new(

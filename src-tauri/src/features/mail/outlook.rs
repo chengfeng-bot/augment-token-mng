@@ -1,12 +1,12 @@
+use super::outlook_storage::OutlookStorage;
 use crate::AppState;
 use crate::http_client;
-use super::outlook_storage::OutlookStorage;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::RngCore;
-use sha2::{Digest, Sha256};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use imap::Session;
 use native_tls::TlsStream;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -192,11 +192,7 @@ fn ensure_loaded(state: &State<'_, AppState>) {
 }
 
 // 持久化新的 refresh_token（内存 + SQLite）
-fn persist_new_refresh_token(
-    state: &AppState,
-    email: &str,
-    new_refresh_token: &str,
-) {
+fn persist_new_refresh_token(state: &AppState, email: &str, new_refresh_token: &str) {
     // 更新内存
     {
         let mut manager = state.outlook_manager.lock().unwrap();
@@ -213,7 +209,10 @@ fn persist_new_refresh_token(
         .ok_or(())
     {
         if let Err(e) = storage.update_refresh_token(email, new_refresh_token) {
-            eprintln!("[outlook] Failed to persist new refresh_token for {}: {}", email, e);
+            eprintln!(
+                "[outlook] Failed to persist new refresh_token for {}: {}",
+                email, e
+            );
         }
     }
 }
@@ -439,7 +438,10 @@ pub async fn outlook_get_emails(
     {
         Ok(response) => return Ok(response),
         Err(graph_err) => {
-            eprintln!("[outlook] Graph API failed for {}: {}, falling back to IMAP", email, graph_err);
+            eprintln!(
+                "[outlook] Graph API failed for {}: {}, falling back to IMAP",
+                email, graph_err
+            );
             match temp_manager
                 .get_emails_with_credentials(&credentials, &folder, page, page_size)
                 .await
@@ -535,9 +537,10 @@ pub async fn outlook_refresh_all_tokens(
                         }
                         (true, None)
                     }
-                    Err(imap_err) => {
-                        (false, Some(format!("Graph: {}; IMAP: {}", graph_err, imap_err)))
-                    }
+                    Err(imap_err) => (
+                        false,
+                        Some(format!("Graph: {}; IMAP: {}", graph_err, imap_err)),
+                    ),
                 }
             }
         };
@@ -545,7 +548,10 @@ pub async fn outlook_refresh_all_tokens(
         // 持久化状态到 SQLite
         let status_str = if success {
             "active"
-        } else if error_msg.as_deref().map_or(false, |e| e.contains("[BANNED]")) {
+        } else if error_msg
+            .as_deref()
+            .map_or(false, |e| e.contains("[BANNED]"))
+        {
             "banned"
         } else {
             "inactive"
@@ -672,8 +678,8 @@ pub async fn outlook_exchange_oauth_token(
 ) -> Result<OAuthTokenResult, String> {
     let client_id = resolve_oauth_client_id(custom_client_id)?;
 
-    let url = url::Url::parse(&redirected_url)
-        .map_err(|e| format!("Failed to parse URL: {}", e))?;
+    let url =
+        url::Url::parse(&redirected_url).map_err(|e| format!("Failed to parse URL: {}", e))?;
 
     let returned_state = url
         .query_pairs()
@@ -721,7 +727,10 @@ pub async fn outlook_exchange_oauth_token(
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Token exchange failed: {}", &body[..body.len().min(300)]));
+        return Err(format!(
+            "Token exchange failed: {}",
+            &body[..body.len().min(300)]
+        ));
     }
 
     let token_data: serde_json::Value = response
@@ -745,7 +754,8 @@ pub async fn outlook_exchange_oauth_token(
         {
             Ok(resp) if resp.status().is_success() => {
                 let me: serde_json::Value = resp.json().await.unwrap_or_default();
-                me["mail"].as_str()
+                me["mail"]
+                    .as_str()
                     .or_else(|| me["userPrincipalName"].as_str())
                     .map(|s| s.to_string())
             }
@@ -793,8 +803,8 @@ pub async fn outlook_delete_emails(
         persist_new_refresh_token(state.inner(), &email, rt);
     }
 
-    let client = http_client::create_proxy_client()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let client =
+        http_client::create_proxy_client().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     let mut success_count = 0i32;
     let mut failed_count = 0i32;
@@ -833,7 +843,10 @@ pub async fn outlook_delete_emails(
                             success_count += 1;
                         } else {
                             failed_count += 1;
-                            let id_idx = res["id"].as_str().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+                            let id_idx = res["id"]
+                                .as_str()
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap_or(0);
                             let msg_id = chunk.get(id_idx).map(|s| s.as_str()).unwrap_or("?");
                             errors.push(format!("ID {}: status {}", msg_id, status));
                         }
@@ -954,7 +967,7 @@ impl OutlookManager {
                                 tr.access_token,
                                 "outlook.office365.com".to_string(),
                                 tr.refresh_token,
-                            ))
+                            ));
                         }
                         Err(e) => {
                             errors.push(format!("Parse token from {} failed: {}", token_url, e));
@@ -967,7 +980,12 @@ impl OutlookManager {
                     if body.contains("service abuse") || body.contains("account is found to be") {
                         return Err(format!("[BANNED] 账号被封禁 (service abuse mode)"));
                     }
-                    errors.push(format!("Token request to {} failed: {} - {}", token_url, status, &body[..body.len().min(150)]));
+                    errors.push(format!(
+                        "Token request to {} failed: {} - {}",
+                        token_url,
+                        status,
+                        &body[..body.len().min(150)]
+                    ));
                 }
                 Err(e) => {
                     errors.push(format!("HTTP request to {} failed: {}", token_url, e));
@@ -977,8 +995,7 @@ impl OutlookManager {
 
         // 端点 2: login.microsoftonline.com/consumers (带 IMAP scope)
         {
-            let token_url =
-                "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+            let token_url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
             let params = [
                 ("client_id", credentials.client_id.as_str()),
                 ("grant_type", "refresh_token"),
@@ -992,7 +1009,11 @@ impl OutlookManager {
                 Ok(response) if response.status().is_success() => {
                     match response.json::<TokenResponse>().await {
                         Ok(tr) => {
-                            return Ok((tr.access_token, "outlook.live.com".to_string(), tr.refresh_token))
+                            return Ok((
+                                tr.access_token,
+                                "outlook.live.com".to_string(),
+                                tr.refresh_token,
+                            ));
                         }
                         Err(e) => {
                             errors.push(format!("Parse token from {} failed: {}", token_url, e));
@@ -1005,7 +1026,12 @@ impl OutlookManager {
                     if body.contains("service abuse") || body.contains("account is found to be") {
                         return Err(format!("[BANNED] 账号被封禁 (service abuse mode)"));
                     }
-                    errors.push(format!("Token request to {} failed: {} - {}", token_url, status, &body[..body.len().min(150)]));
+                    errors.push(format!(
+                        "Token request to {} failed: {} - {}",
+                        token_url,
+                        status,
+                        &body[..body.len().min(150)]
+                    ));
                 }
                 Err(e) => {
                     errors.push(format!("HTTP request to {} failed: {}", token_url, e));
@@ -1052,12 +1078,8 @@ impl OutlookManager {
                 .build()
                 .map_err(|e| format!("TLS connector failed: {}", e))?;
 
-            let client = imap::connect(
-                (imap_server.as_str(), 993),
-                &imap_server,
-                &tls,
-            )
-            .map_err(|e| format!("IMAP connect failed: {}", e))?;
+            let client = imap::connect((imap_server.as_str(), 993), &imap_server, &tls)
+                .map_err(|e| format!("IMAP connect failed: {}", e))?;
 
             // XOAUTH2 认证
             let auth = XOAuth2 {
@@ -1110,12 +1132,8 @@ impl OutlookManager {
                 .build()
                 .map_err(|e| format!("TLS connector failed: {}", e))?;
 
-            let client = imap::connect(
-                (imap_server.as_str(), 993),
-                &imap_server,
-                &tls,
-            )
-            .map_err(|e| format!("IMAP connect failed: {}", e))?;
+            let client = imap::connect((imap_server.as_str(), 993), &imap_server, &tls)
+                .map_err(|e| format!("IMAP connect failed: {}", e))?;
 
             let auth = XOAuth2 {
                 user: email_clone.clone(),
@@ -1256,10 +1274,12 @@ impl OutlookManager {
                                     .as_ref()
                                     .and_then(|addrs| addrs.first())
                                     .map(|addr| {
-                                        let mailbox = addr.mailbox
+                                        let mailbox = addr
+                                            .mailbox
                                             .and_then(|mb| std::str::from_utf8(mb).ok())
                                             .unwrap_or("unknown");
-                                        let host = addr.host
+                                        let host = addr
+                                            .host
                                             .and_then(|h| std::str::from_utf8(h).ok())
                                             .unwrap_or("");
                                         if host.is_empty() {
@@ -1384,18 +1404,13 @@ impl OutlookManager {
                 // 找到 ?= 结束标记
                 if let Some(end_pos) = remaining.find("?=") {
                     let decoded = match encoding.as_str() {
-                        "B" => {
-                            base64::engine::general_purpose::STANDARD
-                                .decode(encoded_text)
-                                .ok()
-                                .and_then(|bytes| String::from_utf8(bytes).ok())
-                        }
+                        "B" => base64::engine::general_purpose::STANDARD
+                            .decode(encoded_text)
+                            .ok()
+                            .and_then(|bytes| String::from_utf8(bytes).ok()),
                         "Q" => {
                             // Quoted-Printable 解码
-                            let qp = encoded_text
-                                .replace('_', " ")
-                                .chars()
-                                .collect::<String>();
+                            let qp = encoded_text.replace('_', " ").chars().collect::<String>();
                             let mut bytes = Vec::new();
                             let mut chars = qp.chars().peekable();
                             while let Some(c) = chars.next() {
@@ -1599,16 +1614,17 @@ impl OutlookManager {
     // 解码内容
     fn decode_content(content: &str) -> String {
         // 处理 Quoted-Printable 编码
-        let decoded = if content.contains("=\n") || content.contains("=20") || content.contains("=3D") {
-            content
-                .replace("=\n", "")
-                .replace("=20", " ")
-                .replace("=3D", "=")
-                .replace("=0A", "\n")
-                .replace("=0D", "\r")
-        } else {
-            content.to_string()
-        };
+        let decoded =
+            if content.contains("=\n") || content.contains("=20") || content.contains("=3D") {
+                content
+                    .replace("=\n", "")
+                    .replace("=20", " ")
+                    .replace("=3D", "=")
+                    .replace("=0A", "\n")
+                    .replace("=0D", "\r")
+            } else {
+                content.to_string()
+            };
 
         // 限制长度
         if decoded.len() > 5000 {
@@ -1827,11 +1843,7 @@ impl OutlookManager {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "(Unknown Recipient)".to_string());
 
-        let body_content = msg
-            .body
-            .as_ref()
-            .and_then(|b| b.content.as_ref())
-            .cloned();
+        let body_content = msg.body.as_ref().and_then(|b| b.content.as_ref()).cloned();
 
         let content_type = msg
             .body
@@ -1864,9 +1876,7 @@ impl OutlookManager {
 
         Ok(EmailDetailsResponse {
             message_id: msg.id.unwrap_or_else(|| message_id.to_string()),
-            subject: msg
-                .subject
-                .unwrap_or_else(|| "(No Subject)".to_string()),
+            subject: msg.subject.unwrap_or_else(|| "(No Subject)".to_string()),
             from_email,
             to_email,
             cc_email,

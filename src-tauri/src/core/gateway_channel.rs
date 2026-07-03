@@ -70,9 +70,16 @@ pub async fn gateway_fetch_channel_models(
 
     let resp = req.send().await.map_err(|e| format!("请求失败: {}", e))?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
     if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status.as_u16(), extract_error(&text)));
+        return Err(format!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            extract_error(&text)
+        ));
     }
 
     let val: serde_json::Value =

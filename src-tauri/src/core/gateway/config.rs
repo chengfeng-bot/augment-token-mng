@@ -80,11 +80,7 @@ pub struct GatewayChannel {
     pub name: String,
     pub kind: ChannelKind,
     /// CodexOauth：绑定的 OpenAI OAuth 账号 id
-    #[serde(
-        default,
-        rename = "accountId",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     /// OpenaiCompat / Anthropic：上游 Base URL
     #[serde(default, rename = "baseUrl", skip_serializing_if = "Option::is_none")]
@@ -160,10 +156,9 @@ impl GatewayConfig {
 
     /// 持久化到磁盘
     pub fn save(&self, app_data_dir: &Path) -> Result<(), String> {
-        std::fs::create_dir_all(app_data_dir)
-            .map_err(|e| format!("创建数据目录失败: {}", e))?;
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("序列化网关配置失败: {}", e))?;
+        std::fs::create_dir_all(app_data_dir).map_err(|e| format!("创建数据目录失败: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("序列化网关配置失败: {}", e))?;
         std::fs::write(config_path(app_data_dir), json)
             .map_err(|e| format!("写入网关配置失败: {}", e))
     }

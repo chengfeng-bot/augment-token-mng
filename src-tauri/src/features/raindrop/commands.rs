@@ -1,7 +1,7 @@
-use crate::data::bookmark::{Bookmark, BookmarkLocalStorage};
-use crate::data::storage::common::AccountStorage;
 use super::client::RaindropClient;
 use super::models::*;
+use crate::data::bookmark::{Bookmark, BookmarkLocalStorage};
+use crate::data::storage::common::AccountStorage;
 use serde_json;
 use std::collections::HashMap;
 use tauri::Manager;
@@ -23,8 +23,8 @@ fn load_config(app: &tauri::AppHandle) -> Result<Option<RaindropConfig>, String>
     }
     let json = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read raindrop config: {}", e))?;
-    let config: RaindropConfig =
-        serde_json::from_str(&json).map_err(|e| format!("Failed to parse raindrop config: {}", e))?;
+    let config: RaindropConfig = serde_json::from_str(&json)
+        .map_err(|e| format!("Failed to parse raindrop config: {}", e))?;
     Ok(Some(config))
 }
 
@@ -33,8 +33,7 @@ fn save_config(app: &tauri::AppHandle, config: &RaindropConfig) -> Result<(), St
     let path = config_path(app)?;
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize raindrop config: {}", e))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write raindrop config: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write raindrop config: {}", e))?;
     Ok(())
 }
 
@@ -54,11 +53,7 @@ fn raindrop_to_bookmark(
     let name = item.title.clone().unwrap_or_else(|| item.link.clone());
 
     let now = chrono::Utc::now().timestamp();
-    let created_at = item
-        .created
-        .as_deref()
-        .map(parse_iso_date)
-        .unwrap_or(now);
+    let created_at = item.created.as_deref().map(parse_iso_date).unwrap_or(now);
     let updated_at = item
         .last_update
         .as_deref()
@@ -96,10 +91,7 @@ fn raindrop_to_bookmark(
 
 /// 保存 Raindrop Token 配置
 #[tauri::command]
-pub async fn raindrop_save_config(
-    token: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn raindrop_save_config(token: String, app: tauri::AppHandle) -> Result<(), String> {
     // 先验证 token
     let client = RaindropClient::new(token.clone())?;
     let valid = client.validate_token().await?;
@@ -144,9 +136,7 @@ pub struct RaindropConfigView {
 
 /// 删除 Raindrop 配置
 #[tauri::command]
-pub async fn raindrop_delete_config(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn raindrop_delete_config(app: tauri::AppHandle) -> Result<(), String> {
     let path = config_path(&app)?;
     if path.exists() {
         std::fs::remove_file(&path)
@@ -157,9 +147,7 @@ pub async fn raindrop_delete_config(
 
 /// 同步 Raindrop 书签到本地
 #[tauri::command]
-pub async fn raindrop_sync(
-    app: tauri::AppHandle,
-) -> Result<RaindropSyncResult, String> {
+pub async fn raindrop_sync(app: tauri::AppHandle) -> Result<RaindropSyncResult, String> {
     let config = load_config(&app)?
         .ok_or("Raindrop config not found. Please configure your token first.")?;
 
@@ -167,10 +155,8 @@ pub async fn raindrop_sync(
 
     // 获取集合信息（用于映射 tag 和 color）
     let collections = client.fetch_collections().await?;
-    let collection_map: HashMap<i64, RaindropCollectionInfo> = collections
-        .into_iter()
-        .map(|c| (c.id, c))
-        .collect();
+    let collection_map: HashMap<i64, RaindropCollectionInfo> =
+        collections.into_iter().map(|c| (c.id, c)).collect();
 
     // 增量同步：使用 last_sync_at 作为起点
     let raindrops = client
@@ -265,9 +251,7 @@ pub async fn raindrop_sync(
 
 /// 全量重新同步（忽略 last_sync_at）
 #[tauri::command]
-pub async fn raindrop_full_sync(
-    app: tauri::AppHandle,
-) -> Result<RaindropSyncResult, String> {
+pub async fn raindrop_full_sync(app: tauri::AppHandle) -> Result<RaindropSyncResult, String> {
     // 先清除 last_sync_at
     let mut config = load_config(&app)?
         .ok_or("Raindrop config not found. Please configure your token first.")?;
@@ -280,9 +264,7 @@ pub async fn raindrop_full_sync(
 
 /// 验证 Token 是否有效
 #[tauri::command]
-pub async fn raindrop_validate_token(
-    token: String,
-) -> Result<bool, String> {
+pub async fn raindrop_validate_token(token: String) -> Result<bool, String> {
     let client = RaindropClient::new(token)?;
     client.validate_token().await
 }

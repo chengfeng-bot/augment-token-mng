@@ -65,7 +65,11 @@ pub struct PlanUsage {
     pub auto_percent_used: f64,
     #[serde(rename = "apiPercentUsed", default, deserialize_with = "null_as_zero")]
     pub api_percent_used: f64,
-    #[serde(rename = "totalPercentUsed", default, deserialize_with = "null_as_zero")]
+    #[serde(
+        rename = "totalPercentUsed",
+        default,
+        deserialize_with = "null_as_zero"
+    )]
     pub total_percent_used: f64,
 }
 

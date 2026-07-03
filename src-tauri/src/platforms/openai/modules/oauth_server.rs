@@ -127,13 +127,12 @@ pub async fn start_oauth_flow(app_handle: tauri::AppHandle) -> Result<Account, S
     set_oauth_data(code_verifier, state.clone());
 
     // 3. 构建授权 URL
-    let auth_url = oauth::build_authorization_url(&state, &code_challenge, &redirect_uri).map_err(
-        |e| {
+    let auth_url =
+        oauth::build_authorization_url(&state, &code_challenge, &redirect_uri).map_err(|e| {
             clear_oauth_data();
             clear_cancellation_token();
             e
-        },
-    )?;
+        })?;
 
     // 发送事件给前端
     let _ = app_handle.emit("oauth-url-generated", &auth_url);
@@ -180,13 +179,10 @@ pub async fn start_oauth_flow(app_handle: tauri::AppHandle) -> Result<Account, S
     clear_cancellation_token();
 
     let mut buffer = [0; 2048];
-    let n = stream
-        .read(&mut buffer)
-        .await
-        .map_err(|e| {
-            clear_oauth_data();
-            format!("读取请求失败: {}", e)
-        })?;
+    let n = stream.read(&mut buffer).await.map_err(|e| {
+        clear_oauth_data();
+        format!("读取请求失败: {}", e)
+    })?;
 
     let request = String::from_utf8_lossy(&buffer[..n]);
     println!("收到回调请求: {}", request.lines().next().unwrap_or(""));

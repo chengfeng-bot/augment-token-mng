@@ -41,8 +41,7 @@ pub async fn fetch_quota_with_retry(account: &mut Account) -> Result<QuotaData, 
         .ok_or_else(|| "OAuth account missing token".to_string())?;
 
     // 2. 查询配额
-    let result =
-        quota::fetch_quota(&access_token, account.chatgpt_account_id.as_deref()).await;
+    let result = quota::fetch_quota(&access_token, account.chatgpt_account_id.as_deref()).await;
 
     // 3. 处理 401 错误 - 强制刷新 token 后重试
     if let Err(ref e) = result {
@@ -51,11 +50,12 @@ pub async fn fetch_quota_with_retry(account: &mut Account) -> Result<QuotaData, 
 
             match refresh_token_if_needed(account, 0, true).await {
                 Ok(true) => {
-                    let new_access_token = account
-                        .token
-                        .as_ref()
-                        .map(|t| t.access_token.clone())
-                        .ok_or_else(|| "OAuth account missing token".to_string())?;
+                    let new_access_token =
+                        account
+                            .token
+                            .as_ref()
+                            .map(|t| t.access_token.clone())
+                            .ok_or_else(|| "OAuth account missing token".to_string())?;
 
                     println!("Retrying quota fetch with new token...");
                     let retry = quota::fetch_quota(

@@ -109,9 +109,7 @@ pub fn reset_machine_id() -> Result<ResetResult, String> {
         eprintln!("Failed to reset telemetry IDs: {}", e);
     }
 
-    Ok(ResetResult {
-        machine_id: new_id,
-    })
+    Ok(ResetResult { machine_id: new_id })
 }
 
 /// 生成完整的遥测 ID 集合（与 Windsurf-Tool 一致）

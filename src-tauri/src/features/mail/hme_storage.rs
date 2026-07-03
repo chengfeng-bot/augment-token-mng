@@ -68,8 +68,10 @@ impl HmeStorage {
         }
 
         if !columns.iter().any(|c| c == "account_id") {
-            conn.execute_batch("ALTER TABLE hme_emails ADD COLUMN account_id TEXT NOT NULL DEFAULT ''")
-                .map_err(|e| format!("Failed to add account_id column: {}", e))?;
+            conn.execute_batch(
+                "ALTER TABLE hme_emails ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+            )
+            .map_err(|e| format!("Failed to add account_id column: {}", e))?;
         }
 
         conn.execute_batch(
@@ -80,10 +82,16 @@ impl HmeStorage {
         Ok(())
     }
 
-    pub fn load_all(&self, is_active: Option<bool>, account_id: Option<&str>) -> Result<Vec<HmeEmailItem>, String> {
+    pub fn load_all(
+        &self,
+        is_active: Option<bool>,
+        account_id: Option<&str>,
+    ) -> Result<Vec<HmeEmailItem>, String> {
         let conn = self.get_connection()?;
 
-        let mut sql = String::from("SELECT anonymous_id, label, hme, is_active, created_at, tag, tag_color, account_id FROM hme_emails");
+        let mut sql = String::from(
+            "SELECT anonymous_id, label, hme, is_active, created_at, tag, tag_color, account_id FROM hme_emails",
+        );
         let mut conditions = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -106,7 +114,8 @@ impl HmeStorage {
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(params_ref.as_slice(), row_to_item)
             .map_err(|e| format!("Failed to query HME emails: {}", e))?;
@@ -221,7 +230,11 @@ impl HmeStorage {
     }
 
     /// Full sync: upsert all API items, delete local rows not in API response (scoped by account_id)
-    pub fn sync_from_api(&self, api_items: &[HmeEmailItem], account_id: &str) -> Result<(), String> {
+    pub fn sync_from_api(
+        &self,
+        api_items: &[HmeEmailItem],
+        account_id: &str,
+    ) -> Result<(), String> {
         let conn = self.get_connection()?;
 
         let mut existing_ids: HashSet<String> = HashSet::new();

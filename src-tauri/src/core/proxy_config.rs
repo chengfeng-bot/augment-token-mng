@@ -413,7 +413,8 @@ pub async fn save_proxy_config(
 
     save_proxy_config_internal(&app, &config)
         .map_err(|e| format!("Failed to save proxy config: {}", e))?;
-    app.state::<crate::AppState>().invalidate_gateway_http_client();
+    app.state::<crate::AppState>()
+        .invalidate_gateway_http_client();
     Ok(())
 }
 
@@ -458,7 +459,8 @@ pub async fn test_proxy_config(
 pub async fn delete_proxy_config(app: tauri::AppHandle) -> Result<(), String> {
     delete_proxy_config_internal(&app)
         .map_err(|e| format!("Failed to delete proxy config: {}", e))?;
-    app.state::<crate::AppState>().invalidate_gateway_http_client();
+    app.state::<crate::AppState>()
+        .invalidate_gateway_http_client();
     Ok(())
 }
 

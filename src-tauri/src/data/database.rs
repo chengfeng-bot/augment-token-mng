@@ -148,9 +148,10 @@ pub async fn save_database_config(
                         .map_err(|e| format!("Failed to update Claude tables: {}", e))?;
                 }
 
-                let bookmark_tables_exist = crate::data::bookmark::migrations::check_tables_exist(&client)
-                    .await
-                    .map_err(|e| format!("Failed to check Bookmark tables: {}", e))?;
+                let bookmark_tables_exist =
+                    crate::data::bookmark::migrations::check_tables_exist(&client)
+                        .await
+                        .map_err(|e| format!("Failed to check Bookmark tables: {}", e))?;
 
                 if !bookmark_tables_exist {
                     crate::data::bookmark::migrations::create_tables(&client)

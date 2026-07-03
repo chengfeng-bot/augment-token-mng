@@ -504,7 +504,13 @@ async fn windsurf_switch_account_seamless_inner(
     let custom_path = read_custom_path_from_config(app, &WINDSURF_CONFIG);
     let patch_result = patch::ensure_seamless_patch(app, custom_path.as_deref())?;
     if patch_result.restarted {
-        emit_switch_progress(app, "auto_patch", "等待 Windsurf 重启加载补丁...", 45, "running");
+        emit_switch_progress(
+            app,
+            "auto_patch",
+            "等待 Windsurf 重启加载补丁...",
+            45,
+            "running",
+        );
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 
@@ -538,7 +544,13 @@ async fn windsurf_switch_account_seamless_inner(
         db::clear_auth_state(&db_path)?;
     }
 
-    emit_switch_progress(app, "launch", "启动 Windsurf 并等待扩展加载...", 78, "running");
+    emit_switch_progress(
+        app,
+        "launch",
+        "启动 Windsurf 并等待扩展加载...",
+        78,
+        "running",
+    );
     process::launch_windsurf_with_path(custom_path.as_deref())?;
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 

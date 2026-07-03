@@ -109,7 +109,9 @@ pub fn inject_token(
         is_gcp_tos = false;
     }
 
-    match crate::antigravity::modules::version::get_antigravity_version_for_path(custom_executable_path) {
+    match crate::antigravity::modules::version::get_antigravity_version_for_path(
+        custom_executable_path,
+    ) {
         Ok(version) => {
             if crate::antigravity::modules::version::is_new_version(&version) {
                 inject_unified_oauth_state(
@@ -220,7 +222,8 @@ fn inject_unified_oauth_state(
         id_token,
         Some(email),
     );
-    let encoded_state = protobuf::create_unified_state_entry("oauthTokenInfoSentinelKey", &oauth_info);
+    let encoded_state =
+        protobuf::create_unified_state_entry("oauthTokenInfoSentinelKey", &oauth_info);
 
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
@@ -383,7 +386,9 @@ mod tests {
             )
             .unwrap();
         let decoded_enterprise_prefs = general_purpose::STANDARD.decode(enterprise_prefs).unwrap();
-        assert!(String::from_utf8_lossy(&decoded_enterprise_prefs).contains("enterpriseGcpProjectId"));
+        assert!(
+            String::from_utf8_lossy(&decoded_enterprise_prefs).contains("enterpriseGcpProjectId")
+        );
 
         let onboarding: String = conn
             .query_row(

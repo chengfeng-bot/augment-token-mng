@@ -11,16 +11,31 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
-const SOURCE_URL: &str =
-    "https://raw.githubusercontent.com/ThinkInAIXYZ/PublicProviderConf/refs/heads/dev/dist/all.json";
+const SOURCE_URL: &str = "https://raw.githubusercontent.com/ThinkInAIXYZ/PublicProviderConf/refs/heads/dev/dist/all.json";
 
 const MODELS_FILENAME: &str = "gateway_models.json";
 
 /// 白名单开发商（按 provider 的 key 或 id 不区分大小写匹配）。
 const ALLOWED_DEVELOPERS: &[&str] = &[
-    "openai", "anthropic", "google", "meta", "deepseek", "alibaba", "bytedance", "x-ai", "xai",
-    "mistral", "mistralai", "moonshotai", "moonshot", "zhipu", "zhipuai", "qwen", "cohere",
-    "perplexity", "groq",
+    "openai",
+    "anthropic",
+    "google",
+    "meta",
+    "deepseek",
+    "alibaba",
+    "bytedance",
+    "x-ai",
+    "xai",
+    "mistral",
+    "mistralai",
+    "moonshotai",
+    "moonshot",
+    "zhipu",
+    "zhipuai",
+    "qwen",
+    "cohere",
+    "perplexity",
+    "groq",
 ];
 
 /// llama 渠道 → meta，doubao 渠道 → bytedance 的通用归并映射。
@@ -122,7 +137,11 @@ fn build_providers(conf: RemoteConf) -> Vec<OutProvider> {
             key.clone()
         };
         out.push(OutProvider {
-            id: if provider.id.is_empty() { key.clone() } else { provider.id.clone() },
+            id: if provider.id.is_empty() {
+                key.clone()
+            } else {
+                provider.id.clone()
+            },
             name,
             models: provider.models.clone(),
         });
@@ -171,7 +190,10 @@ pub async fn gateway_sync_models(app: AppHandle) -> Result<SyncResult, String> {
     if !resp.status().is_success() {
         return Err(format!("请求失败，HTTP 状态 {}", resp.status()));
     }
-    let text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
     let conf: RemoteConf =
         serde_json::from_str(&text).map_err(|e| format!("解析供应商配置失败: {}", e))?;
 

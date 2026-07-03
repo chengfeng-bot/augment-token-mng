@@ -1,6 +1,6 @@
-use crate::http_client::create_http_client;
-use crate::AppState;
 use super::gptmail_storage::{GptMailRecord, GptMailStorage};
+use crate::AppState;
+use crate::http_client::create_http_client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -79,7 +79,9 @@ fn parse_http_error(status: reqwest::StatusCode, body_text: &str) -> String {
 
 /// 生成随机邮箱
 #[tauri::command]
-pub async fn generate_random_email(api_key: Option<String>) -> Result<GenerateEmailResponse, String> {
+pub async fn generate_random_email(
+    api_key: Option<String>,
+) -> Result<GenerateEmailResponse, String> {
     let client = create_http_client().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     let response = client
@@ -121,7 +123,10 @@ pub async fn generate_random_email(api_key: Option<String>) -> Result<GenerateEm
 
 /// 获取邮箱邮件
 #[tauri::command]
-pub async fn get_emails(email: String, api_key: Option<String>) -> Result<GetEmailsResponse, String> {
+pub async fn get_emails(
+    email: String,
+    api_key: Option<String>,
+) -> Result<GetEmailsResponse, String> {
     let client = create_http_client().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
     let url = format!("https://mail.chatgpt.org.uk/api/emails?email={}", email);
@@ -194,7 +199,11 @@ pub async fn gptmail_save_email(
     state: State<'_, AppState>,
 ) -> Result<GptMailRecord, String> {
     let storage = get_gptmail_storage(&state)?;
-    storage.save(&email, label.as_deref().unwrap_or(""), description.as_deref().unwrap_or(""))
+    storage.save(
+        &email,
+        label.as_deref().unwrap_or(""),
+        description.as_deref().unwrap_or(""),
+    )
 }
 
 #[tauri::command]
@@ -205,7 +214,11 @@ pub async fn gptmail_update_email(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let storage = get_gptmail_storage(&state)?;
-    storage.update(id, label.as_deref().unwrap_or(""), description.as_deref().unwrap_or(""))
+    storage.update(
+        id,
+        label.as_deref().unwrap_or(""),
+        description.as_deref().unwrap_or(""),
+    )
 }
 
 #[tauri::command]
