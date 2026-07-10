@@ -111,7 +111,7 @@ const emit = defineEmits(['close', 'switched'])
 const { t } = useI18n()
 const store = useGatewayStore()
 
-const reasoningOptions = ['low', 'medium', 'high', 'xhigh']
+const reasoningOptions = ['low', 'medium', 'high', 'xhigh', 'max']
 const form = ref({
   modelProvider: 'gateway',
   model: '',

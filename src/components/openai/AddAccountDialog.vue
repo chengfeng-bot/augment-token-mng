@@ -387,6 +387,7 @@
               <button @click="selectReasoningEffort('medium', close)" class="dropdown-item">medium</button>
               <button @click="selectReasoningEffort('high', close)" class="dropdown-item">high</button>
               <button @click="selectReasoningEffort('xhigh', close)" class="dropdown-item">xhigh</button>
+              <button @click="selectReasoningEffort('max', close)" class="dropdown-item">max</button>
             </template>
           </FloatingDropdown>
         </div>

@@ -123,7 +123,7 @@ const form = ref({
   wireApi: 'responses'
 })
 
-const reasoningOptions = ['low', 'medium', 'high', 'xhigh']
+const reasoningOptions = ['low', 'medium', 'high', 'xhigh', 'max']
 const isLoading = ref(false)
 const error = ref('')
 

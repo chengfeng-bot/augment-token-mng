@@ -29,7 +29,7 @@ pub struct ApiConfig {
     /// 模型名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// 推理强度 (low, medium, high, xhigh)
+    /// 推理强度 (low, medium, high, xhigh, max)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_reasoning_effort: Option<String>,
     /// Wire API 类型 (responses, chat)
