@@ -26,10 +26,14 @@
         <input
           v-model="form.model"
           type="text"
+          list="codex-quick-switch-models"
           :placeholder="$t('platform.openai.addAccountDialog.modelPlaceholder')"
           class="input"
           :disabled="isLoading"
         />
+        <datalist id="codex-quick-switch-models">
+          <option v-for="id in modelOptions" :key="id" :value="id" />
+        </datalist>
       </div>
 
       <div class="flex gap-3">
@@ -101,11 +105,12 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import BaseModal from '@/components/common/BaseModal.vue'
 import FloatingDropdown from '@/components/common/FloatingDropdown.vue'
+import { useGatewayStore } from '@/stores/gateway'
 
 const props = defineProps({
   type: { type: String, required: true }, // 'codex' | 'droid'
@@ -115,6 +120,7 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'switched'])
 const { t: $t } = useI18n()
+const gatewayStore = useGatewayStore()
 
 const form = ref({
   modelProvider: 'codex',
@@ -126,6 +132,25 @@ const form = ref({
 const reasoningOptions = ['low', 'medium', 'high', 'xhigh', 'max']
 const isLoading = ref(false)
 const error = ref('')
+
+// 与网关渠道一致：取已同步模型目录中 OpenAI 提供商的模型 ID
+const OPENAI_ALIASES = ['openai']
+const modelOptions = computed(() => {
+  const ids = []
+  for (const grp of gatewayStore.models) {
+    const key = (grp.id || '').toLowerCase()
+    const name = (grp.name || '').toLowerCase()
+    if (!OPENAI_ALIASES.includes(key) && !OPENAI_ALIASES.includes(name)) continue
+    for (const m of grp.models || []) {
+      if (m?.id) ids.push(m.id)
+    }
+  }
+  return ids
+})
+
+onMounted(() => {
+  gatewayStore.loadModels()
+})
 
 const canSubmit = computed(() => {
   if (props.type === 'codex') {
