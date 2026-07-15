@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use super::canonical::Usage;
 
+/// 网关用量变更事件名
+pub const GATEWAY_USAGE_CHANGED_EVENT: &str = "gateway-usage-changed";
+
 /// 单条用量记录（字段名对齐前端 `GatewayUsage.vue` 的 camelCase 契约）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageRecord {
@@ -52,6 +55,20 @@ pub struct UsageRecord {
     pub reasoning_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// 推送给前端的用量增量；事件只在对应数据库操作成功后发送
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum UsageChange {
+    Recorded {
+        record: UsageRecord,
+    },
+    Cleared,
+    ChannelRemoved {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+    },
 }
 
 impl UsageRecord {
@@ -134,10 +151,8 @@ impl GatewayUsageStore {
     }
 
     /// 追加一条记录
-    pub fn record(&self, rec: UsageRecord) {
-        if let Err(e) = self.insert(&rec) {
-            eprintln!("[GatewayUsage] 写入记录失败: {}", e);
-        }
+    pub fn record(&self, rec: &UsageRecord) -> Result<(), String> {
+        self.insert(rec)
     }
 
     fn insert(&self, rec: &UsageRecord) -> Result<(), String> {
@@ -209,28 +224,24 @@ impl GatewayUsageStore {
     }
 
     /// 清空全部记录
-    pub fn clear(&self) {
-        let result = self.get_connection().and_then(|conn| {
+    pub fn clear(&self) -> Result<(), String> {
+        self.get_connection().and_then(|conn| {
             conn.execute("DELETE FROM gateway_usage", [])
                 .map_err(|e| format!("清空记录失败: {}", e))
-        });
-        if let Err(e) = result {
-            eprintln!("[GatewayUsage] 清空记录失败: {}", e);
-        }
+                .map(|_| ())
+        })
     }
 
     /// 删除指定渠道的全部用量记录
-    pub fn delete_by_channel(&self, channel_id: &str) {
-        let result = self.get_connection().and_then(|conn| {
+    pub fn delete_by_channel(&self, channel_id: &str) -> Result<(), String> {
+        self.get_connection().and_then(|conn| {
             conn.execute(
                 "DELETE FROM gateway_usage WHERE channel_id = ?1",
                 params![channel_id],
             )
             .map_err(|e| format!("删除渠道记录失败: {}", e))
-        });
-        if let Err(e) = result {
-            eprintln!("[GatewayUsage] 删除渠道记录失败: {}", e);
-        }
+            .map(|_| ())
+        })
     }
 }
 

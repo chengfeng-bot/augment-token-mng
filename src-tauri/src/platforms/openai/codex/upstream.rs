@@ -113,7 +113,7 @@ pub fn should_strip_request_header(header_name: &str) -> bool {
 pub fn should_retry_status(status: StatusCode) -> bool {
     matches!(
         status.as_u16(),
-        401 | 403 | 408 | 429 | 500 | 502 | 503 | 504
+        401 | 402 | 403 | 408 | 429 | 500 | 502 | 503 | 504
     )
 }
 

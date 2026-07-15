@@ -332,8 +332,12 @@ const confirmClear = async () => {
     variant: 'danger'
   })
   if (!ok) return
-  await store.clearUsage()
-  window.$notify?.success(t('gateway.usage.cleared'))
+  try {
+    await store.clearUsage()
+    window.$notify?.success(t('gateway.usage.cleared'))
+  } catch (error) {
+    window.$notify?.error(`${t('common.operationFailed')}: ${error?.message || error}`)
+  }
 }
 
 onActivated(() => {

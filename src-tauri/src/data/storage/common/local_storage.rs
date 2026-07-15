@@ -1,12 +1,15 @@
 use super::traits::{AccountStorage, StorageError, SyncableAccount};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use tauri::Manager;
 
 const SCHEMA_VERSION: i32 = 2;
+static STORAGE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn default_schema_version() -> i32 {
     SCHEMA_VERSION
@@ -52,7 +55,7 @@ impl<T> AccountStore<T> {
 /// 通用本地文件存储
 pub struct GenericLocalStorage<T: SyncableAccount> {
     storage_path: PathBuf,
-    lock: Mutex<()>,
+    lock: Arc<Mutex<()>>,
     _phantom: PhantomData<T>,
 }
 
@@ -61,24 +64,28 @@ impl<T: SyncableAccount> GenericLocalStorage<T> {
         let app_data_dir = app_handle.path().app_data_dir()?;
         fs::create_dir_all(&app_data_dir)?;
 
+        let storage_path = app_data_dir.join(T::storage_file_name());
         Ok(Self {
-            storage_path: app_data_dir.join(T::storage_file_name()),
-            lock: Mutex::new(()),
+            lock: storage_lock(&storage_path),
+            storage_path,
             _phantom: PhantomData,
         })
     }
 
     pub fn new_with_path(storage_path: PathBuf) -> Self {
         Self {
+            lock: storage_lock(&storage_path),
             storage_path,
-            lock: Mutex::new(()),
             _phantom: PhantomData,
         }
     }
 
     fn read_store(&self) -> Result<AccountStore<T>, StorageError> {
         let _guard = self.lock.lock().unwrap();
+        self.read_store_unlocked()
+    }
 
+    fn read_store_unlocked(&self) -> Result<AccountStore<T>, StorageError> {
         if !self.storage_path.exists() {
             return Ok(AccountStore::default());
         }
@@ -103,7 +110,10 @@ impl<T: SyncableAccount> GenericLocalStorage<T> {
 
     fn write_store(&self, store: &AccountStore<T>) -> Result<(), StorageError> {
         let _guard = self.lock.lock().unwrap();
+        self.write_store_unlocked(store)
+    }
 
+    fn write_store_unlocked(&self, store: &AccountStore<T>) -> Result<(), StorageError> {
         if let Some(parent) = self.storage_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -128,9 +138,10 @@ impl<T: SyncableAccount> GenericLocalStorage<T> {
     }
 
     pub async fn set_current_account_id(&self, id: Option<String>) -> Result<(), StorageError> {
-        let mut store = self.read_store()?;
+        let _guard = self.lock.lock().unwrap();
+        let mut store = self.read_store_unlocked()?;
         store.current_account_id = id;
-        self.write_store(&store)
+        self.write_store_unlocked(&store)
     }
 
     pub async fn replace_all(
@@ -169,10 +180,23 @@ impl<T: SyncableAccount> GenericLocalStorage<T> {
     }
 }
 
+fn storage_lock(path: &PathBuf) -> Arc<Mutex<()>> {
+    let mut locks = STORAGE_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(path.clone(), Arc::downgrade(&lock));
+    lock
+}
+
 #[async_trait::async_trait]
 impl<T: SyncableAccount> AccountStorage<T> for GenericLocalStorage<T> {
     async fn save_account(&self, account: &T) -> Result<(), StorageError> {
-        let mut store = self.read_store()?;
+        let _guard = self.lock.lock().unwrap();
+        let mut store = self.read_store_unlocked()?;
         let mut account = account.clone();
         account.set_deleted(false);
 
@@ -187,7 +211,7 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericLocalStorage<T> {
         store.accounts.push(account);
         store.deletions.retain(|d| d.id != account_id);
 
-        self.write_store(&store)
+        self.write_store_unlocked(&store)
     }
 
     async fn load_accounts(&self) -> Result<Vec<T>, StorageError> {
@@ -212,7 +236,8 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericLocalStorage<T> {
     }
 
     async fn delete_account(&self, id: &str) -> Result<bool, StorageError> {
-        let mut store = self.read_store()?;
+        let _guard = self.lock.lock().unwrap();
+        let mut store = self.read_store_unlocked()?;
         let initial_len = store.accounts.len();
 
         store.accounts.retain(|a| a.id() != id);
@@ -228,7 +253,7 @@ impl<T: SyncableAccount> AccountStorage<T> for GenericLocalStorage<T> {
             store.current_account_id = store.accounts.first().map(|a| a.id().to_string());
         }
 
-        self.write_store(&store)?;
+        self.write_store_unlocked(&store)?;
         Ok(store.accounts.len() < initial_len)
     }
 

@@ -126,6 +126,7 @@ pub async fn start_api_server_cmd(
             windsurf_storage_manager: state.windsurf_storage_manager.clone(),
             cursor_storage_manager: state.cursor_storage_manager.clone(),
             openai_storage_manager: state.openai_storage_manager.clone(),
+            openai_token_coordinator: state.openai_token_coordinator.clone(),
             claude_storage_manager: state.claude_storage_manager.clone(),
             subscription_storage_manager: state.subscription_storage_manager.clone(),
             bookmark_storage_manager: state.bookmark_storage_manager.clone(),

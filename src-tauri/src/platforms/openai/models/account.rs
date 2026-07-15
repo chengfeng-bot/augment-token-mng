@@ -1,4 +1,4 @@
-use super::{QuotaData, TokenData};
+use super::{QuotaData, QuotaRefreshState, TokenData};
 use crate::data::storage::common::SyncableAccount;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,9 @@ pub struct Account {
     /// 配额信息
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaData>,
+    /// 配额检查调度状态
+    #[serde(default)]
+    pub quota_refresh: QuotaRefreshState,
     /// 标签
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
@@ -86,7 +89,7 @@ pub struct Account {
     /// Refresh Token 是否已失效
     #[serde(default)]
     pub rt_invalid: bool,
-    /// RT 失效原因: "refresh_token_reused" | "invalid_grant" | "unauthorized"
+    /// RT 失效原因: "refresh_token_reused" | "invalid_grant"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt_invalid_reason: Option<String>,
 }
@@ -131,6 +134,11 @@ impl SyncableAccount for Account {
         if self.openai_auth_json.is_none() && source.openai_auth_json.is_some() {
             self.openai_auth_json = source.openai_auth_json.clone();
         }
+        if self.quota_refresh.last_attempt_at.is_none()
+            && source.quota_refresh.last_attempt_at.is_some()
+        {
+            self.quota_refresh = source.quota_refresh.clone();
+        }
     }
 }
 
@@ -164,6 +172,7 @@ impl Account {
             organization_id,
             openai_auth_json: None,
             quota: None,
+            quota_refresh: QuotaRefreshState::default(),
             tag: None,
             tag_color: None,
             created_at: now,
@@ -192,6 +201,7 @@ impl Account {
             organization_id: None,
             openai_auth_json: None,
             quota: None,
+            quota_refresh: QuotaRefreshState::default(),
             tag: None,
             tag_color: None,
             created_at: now,

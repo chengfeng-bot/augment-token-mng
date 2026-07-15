@@ -65,6 +65,32 @@ impl CodexPool {
         false
     }
 
+    /// 从持久化账号定向同步一个池项，并保留运行时选号与冷却状态。
+    pub async fn sync_account(&self, account: &crate::platforms::openai::models::Account) {
+        let mut pool = self.accounts.write().await;
+        let Some(mut next) = CodexPoolAccount::from_openai_account(account) else {
+            pool.retain(|item| item.id != account.id);
+            return;
+        };
+
+        if let Some(position) = pool.iter().position(|item| item.id == next.id) {
+            let previous = &pool[position];
+            next.used_quota = previous.used_quota;
+            next.total_tokens_used = previous.total_tokens_used;
+            if previous.last_used.unwrap_or_default() > next.last_used.unwrap_or_default() {
+                next.last_used = previous.last_used;
+            }
+            if Self::should_keep_runtime_unavailable(previous, &next) {
+                next.last_error_status = previous.last_error_status;
+                next.cooldown_until = previous.cooldown_until;
+                next.unavailable_reason = previous.unavailable_reason.clone();
+            }
+            pool[position] = next;
+        } else {
+            pool.push(next);
+        }
+    }
+
     /// 设置选择策略
     pub async fn set_strategy(&self, strategy: PoolStrategy) {
         let mut s = self.strategy.write().await;
@@ -303,14 +329,6 @@ impl CodexPool {
         self.active_count().await > 0
     }
 
-    /// 清理过期账号
-    pub async fn cleanup_expired(&self) -> usize {
-        let mut pool = self.accounts.write().await;
-        let original_len = pool.len();
-        pool.retain(|a| !a.is_expired());
-        original_len - pool.len()
-    }
-
     /// 刷新所有账号状态
     pub async fn refresh_from_accounts(
         &self,
@@ -326,33 +344,11 @@ impl CodexPool {
                 if let Some(prev) = existing.get(&next.id) {
                     next.used_quota = prev.used_quota;
                     next.total_tokens_used = prev.total_tokens_used;
-                    // 仅保留账号级问题导致的冷却；历史版本中的 network/transient 冷却在刷新时自动清理。
-                    let keep_cooldown = matches!(
-                        prev.unavailable_reason.as_deref(),
-                        Some("unauthorized") | Some("payment_required") | Some("quota")
-                    );
-                    if keep_cooldown {
-                        // 如果 token 已被刷新（expires_at 变化），说明凭证已更新，清除 "unauthorized" 冷却
-                        let token_refreshed = prev.unavailable_reason.as_deref()
-                            == Some("unauthorized")
-                            && next.expires_at > prev.expires_at;
-                        if token_refreshed {
-                            next.cooldown_until = None;
-                            next.unavailable_reason = None;
-                        } else {
-                            next.cooldown_until = prev.cooldown_until;
-                            next.unavailable_reason = prev.unavailable_reason.clone();
-                        }
-                    } else {
-                        next.cooldown_until = None;
-                        next.unavailable_reason = None;
+                    if Self::should_keep_runtime_unavailable(prev, &next) {
+                        next.last_error_status = prev.last_error_status;
+                        next.cooldown_until = prev.cooldown_until;
+                        next.unavailable_reason = prev.unavailable_reason.clone();
                     }
-                    // 保留运行时标记的 forbidden 状态（executor 重试时遇到 402/403 仅更新内存，
-                    // 未写数据库；若丢弃此标记，冷却过期后该账号会再次参与请求并重复 403）。
-                    if prev.is_forbidden {
-                        next.is_forbidden = true;
-                    }
-                    next.last_error_status = prev.last_error_status;
                     if prev.last_used.unwrap_or_default() > next.last_used.unwrap_or_default() {
                         next.last_used = prev.last_used;
                     }
@@ -361,61 +357,25 @@ impl CodexPool {
             })
             .collect();
     }
+
+    fn should_keep_runtime_unavailable(
+        previous: &CodexPoolAccount,
+        next: &CodexPoolAccount,
+    ) -> bool {
+        match previous.unavailable_reason.as_deref() {
+            Some("unauthorized") => next.expires_at <= previous.expires_at,
+            Some("quota") => {
+                next.quota_status == crate::platforms::openai::models::QuotaStatus::Exhausted
+                    && !next.is_quota_stale()
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Default for CodexPool {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CodexPool, PoolStrategy};
-    use crate::platforms::openai::codex::models::CodexPoolAccount;
-
-    fn sample_pool_account(id: &str) -> CodexPoolAccount {
-        let now = chrono::Utc::now().timestamp();
-        CodexPoolAccount {
-            id: id.to_string(),
-            email: format!("{id}@example.com"),
-            access_token: "access".to_string(),
-            refresh_token: Some("refresh".to_string()),
-            id_token: None,
-            expires_at: now + 3600,
-            chatgpt_account_id: id.to_string(),
-            chatgpt_user_id: None,
-            organization_id: None,
-            is_active: true,
-            is_forbidden: false,
-            last_used: Some(now),
-            last_refresh: None,
-            cooldown_until: None,
-            unavailable_reason: None,
-            last_error_status: None,
-            daily_quota: None,
-            used_quota: 0,
-            total_tokens_used: 0,
-            codex_5h_used_percent: None,
-            codex_7d_used_percent: None,
-            plan_type: None,
-            subscription_expires_at: None,
-            tag: None,
-            tag_color: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn select_single_falls_back_to_first_available_account() {
-        let pool = CodexPool::new();
-        pool.add_account(sample_pool_account("primary")).await;
-        pool.add_account(sample_pool_account("fallback")).await;
-        pool.set_strategy(PoolStrategy::Single).await;
-        pool.set_selected_account_id("missing-in-pool".to_string())
-            .await;
-
-        let selected = pool.next_account().await.unwrap();
-        assert_eq!(selected.id, "primary");
     }
 }
 

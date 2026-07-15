@@ -1,114 +1,168 @@
-use crate::platforms::openai::models::{Account, AccountType, QuotaData, TokenData};
+use tauri::Manager;
+
+use crate::AppState;
+use crate::platforms::openai::models::{Account, AccountType, QuotaData};
+use crate::platforms::openai::modules::token_coordinator::OAuthTokenCoordinator;
 use crate::platforms::openai::modules::{oauth, quota};
 
-/// 从错误消息中提取 rt_invalid 原因
-fn extract_rt_invalid_reason(err: &str) -> Option<String> {
-    if err.contains("refresh_token_reused") {
-        Some("refresh_token_reused".to_string())
-    } else if err.contains("invalid_grant") {
-        Some("invalid_grant".to_string())
-    } else {
-        None
-    }
+const TOKEN_REFRESH_WINDOW_SECS: i64 = 300;
+
+struct QuotaFetchResult {
+    quota: QuotaData,
+    account: Account,
 }
 
-/// 带有重试机制的配额查询
-pub async fn fetch_quota_with_retry(account: &mut Account) -> Result<QuotaData, String> {
-    println!("=== OpenAI fetch_quota_with_retry ===");
-    println!("account.email: {}", account.email);
-
-    // API 账号不支持配额查询
-    if account.account_type == AccountType::API {
+/// 使用统一 Token Coordinator 查询配额；仅在首次 401 后刷新并重试一次。
+async fn fetch_quota_with_retry(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<QuotaFetchResult, String> {
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    let resolved = coordinator
+        .ensure_fresh(account_id, TOKEN_REFRESH_WINDOW_SECS)
+        .await
+        .map_err(|error| error.to_string())?;
+    if resolved.account.account_type == AccountType::API {
         return Err("API accounts do not support quota fetching".to_string());
     }
-
-    // 1. 刷新配额时总是先尝试刷新 Token，失败则 fallback 用现有 token
-    match refresh_token_if_needed(account, 0, true).await {
-        Ok(refreshed) => {
-            if refreshed {
-                println!("Token refreshed, updating account");
-            }
-        }
-        Err(e) => {
-            println!("Token refresh failed (will try existing token): {}", e);
-        }
-    }
-
-    let access_token = account
+    let access_token = resolved
+        .account
         .token
         .as_ref()
         .map(|t| t.access_token.clone())
         .ok_or_else(|| "OAuth account missing token".to_string())?;
-
-    // 2. 查询配额
-    let result = quota::fetch_quota(&access_token, account.chatgpt_account_id.as_deref()).await;
-
-    // 3. 处理 401 错误 - 强制刷新 token 后重试
-    if let Err(ref e) = result {
-        if e.contains("401") || e.contains("unauthorized") {
-            println!("Got 401 error, trying force token refresh...");
-
-            match refresh_token_if_needed(account, 0, true).await {
-                Ok(true) => {
-                    let new_access_token =
-                        account
-                            .token
-                            .as_ref()
-                            .map(|t| t.access_token.clone())
-                            .ok_or_else(|| "OAuth account missing token".to_string())?;
-
-                    println!("Retrying quota fetch with new token...");
-                    let retry = quota::fetch_quota(
-                        &new_access_token,
-                        account.chatgpt_account_id.as_deref(),
-                    )
-                    .await;
-                    if let Err(ref e) = retry {
-                        if e.contains("401") || e.contains("unauthorized") {
-                            account.rt_invalid = true;
-                            account.rt_invalid_reason = Some("unauthorized".to_string());
-                        }
-                    }
-                    return retry;
-                }
-                Ok(false) => {
-                    account.rt_invalid = true;
-                    account.rt_invalid_reason = Some("unauthorized".to_string());
-                }
-                Err(e) => {
-                    return Err(format!("Token refresh failed: {}", e));
-                }
-            }
+    match quota::fetch_quota(
+        &access_token,
+        resolved.account.chatgpt_account_id.as_deref(),
+    )
+    .await
+    {
+        Ok(quota) => Ok(QuotaFetchResult {
+            quota,
+            account: resolved.account,
+        }),
+        Err(error) if error.is_unauthorized() => {
+            let refreshed = coordinator
+                .refresh_after_unauthorized(account_id, &access_token)
+                .await
+                .map_err(|refresh_error| refresh_error.to_string())?;
+            let new_access_token = refreshed
+                .account
+                .token
+                .as_ref()
+                .map(|token| token.access_token.clone())
+                .ok_or_else(|| "OAuth account missing token".to_string())?;
+            let quota = quota::fetch_quota(
+                &new_access_token,
+                refreshed.account.chatgpt_account_id.as_deref(),
+            )
+            .await
+            .map_err(|retry_error| retry_error.to_string())?;
+            Ok(QuotaFetchResult {
+                quota,
+                account: refreshed.account,
+            })
         }
+        Err(error) => Err(error.to_string()),
     }
-
-    result
 }
 
-/// 刷新配额（含 token 续期、拉取配额、更新 account 配额与 openai_auth_json）。
-/// 供手动刷新、批量刷新、定时任务等统一调用；调用方负责保存账号。
-pub async fn refresh_quota_and_backfill(account: &mut Account) -> Result<QuotaData, String> {
-    let quota = fetch_quota_with_retry(account).await?;
-    account.update_quota(quota.clone());
-    backfill_openai_auth_json_if_missing(account);
+/// 刷新配额并以 patch 方式写回最新账号，避免覆盖并发轮换后的 Token。
+pub async fn refresh_quota_and_backfill(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<Account, String> {
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    let _quota_guard = coordinator.lock_quota_operation(account_id).await;
+    refresh_quota_and_backfill_locked(app, account_id, &coordinator).await
+}
 
-    if missing_subscription_expiry(account) {
-        if let Some(access_token) = account
+async fn refresh_quota_and_backfill_locked(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    coordinator: &OAuthTokenCoordinator,
+) -> Result<Account, String> {
+    let base_interval = configured_quota_refresh_interval(app);
+    let fetched = match fetch_quota_with_retry(app, account_id).await {
+        Ok(fetched) => fetched,
+        Err(error) => {
+            let recorded_error = error.clone();
+            let _ = coordinator
+                .update_account(account_id, "quota-refresh-failed", move |account| {
+                    account.quota_refresh.record_failure(
+                        chrono::Utc::now().timestamp(),
+                        base_interval,
+                        recorded_error,
+                    );
+                })
+                .await;
+            return Err(error);
+        }
+    };
+    let mut enriched = fetched.account.clone();
+    backfill_openai_auth_json_if_missing(&mut enriched);
+
+    if missing_subscription_expiry(&enriched) {
+        if let Some(access_token) = enriched
             .token
             .as_ref()
             .map(|token| token.access_token.clone())
         {
             oauth::enrich_openai_auth_json_with_account_check(
                 &access_token,
-                account.organization_id.as_deref(),
-                account.chatgpt_account_id.as_deref(),
-                &mut account.openai_auth_json,
+                enriched.organization_id.as_deref(),
+                enriched.chatgpt_account_id.as_deref(),
+                &mut enriched.openai_auth_json,
             )
             .await;
         }
     }
 
-    Ok(quota)
+    let quota = fetched.quota;
+    let openai_auth_json = enriched.openai_auth_json;
+    coordinator
+        .update_account(account_id, "quota-refresh", move |account| {
+            let now = chrono::Utc::now().timestamp();
+            let exhausted = quota.is_exhausted();
+            let reset_after = [
+                quota.codex_5h_reset_after_seconds,
+                quota.codex_7d_reset_after_seconds,
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|seconds| *seconds > 0)
+            .min();
+            account.update_quota(quota);
+            account.quota_refresh.record_success(now, base_interval);
+            if exhausted {
+                if let Some(reset_after) = reset_after {
+                    let reset_at = now.saturating_add(reset_after.max(60)).saturating_add(5);
+                    let normal_next = now.saturating_add(base_interval.min(i64::MAX as u64) as i64);
+                    account.quota_refresh.next_check_at = Some(reset_at.min(normal_next));
+                    account.quota_refresh.stale_after = Some(reset_at);
+                }
+            }
+            if openai_auth_json.is_some() {
+                account.openai_auth_json = openai_auth_json;
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn configured_quota_refresh_interval(app: &tauri::AppHandle) -> u64 {
+    let state = app.state::<AppState>();
+    state
+        .codex_server_config
+        .lock()
+        .ok()
+        .and_then(|config| {
+            config
+                .as_ref()
+                .map(|config| config.quota_refresh_interval_seconds)
+        })
+        .unwrap_or(30 * 60)
+        .max(60)
 }
 
 pub(crate) fn missing_subscription_expiry(account: &Account) -> bool {
@@ -138,105 +192,55 @@ pub(crate) fn missing_subscription_expiry(account: &Account) -> bool {
     }
 }
 
-/// 消费一张限流重置券后刷新配额（token 续期、consume、重新拉取配额）。
-/// 调用方负责保存账号。
-pub async fn consume_reset_credit(account: &mut Account) -> Result<QuotaData, String> {
-    if account.account_type == AccountType::API {
+/// 消费一张限流重置券；使用 ensureFresh，首次 401 后刷新并重试一次。
+pub async fn consume_reset_credit(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<Account, String> {
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    let _quota_guard = coordinator.lock_quota_operation(account_id).await;
+    let resolved = coordinator
+        .ensure_fresh(account_id, TOKEN_REFRESH_WINDOW_SECS)
+        .await
+        .map_err(|error| error.to_string())?;
+    if resolved.account.account_type == AccountType::API {
         return Err("API accounts do not support reset credits".to_string());
     }
 
-    // 消费前尽量拿到有效 token（失败则用现有 token 继续尝试）
-    let _ = refresh_token_if_needed(account, 0, true).await;
-
-    let access_token = account
+    let access_token = resolved
+        .account
         .token
         .as_ref()
         .map(|t| t.access_token.clone())
         .ok_or_else(|| "OAuth account missing token".to_string())?;
-
-    quota::consume_reset_credit(&access_token, account.chatgpt_account_id.as_deref()).await?;
-
-    // 消费成功后重新拉取配额，反映重置后的窗口与剩余重置券
-    refresh_quota_and_backfill(account).await
-}
-
-pub async fn refresh_token_if_needed(
-    account: &mut Account,
-    refresh_window_secs: i64,
-    force: bool,
-) -> Result<bool, String> {
-    // API 账号不支持 token 刷新
-    if account.account_type == AccountType::API {
-        return Ok(false);
-    }
-
-    let refresh_window_secs = refresh_window_secs.max(0);
-
-    let current_token = account
-        .token
-        .as_ref()
-        .ok_or("OAuth account missing token".to_string())?;
-
-    if !force && !oauth::token_needs_refresh(current_token, refresh_window_secs) {
-        return Ok(false);
-    }
-
-    let account_token = current_token;
-
-    let new_token = if force {
-        let refresh_token_value = account_token
-            .refresh_token
+    let consume = quota::consume_reset_credit(
+        &access_token,
+        resolved.account.chatgpt_account_id.as_deref(),
+    )
+    .await;
+    if let Err(error) = consume {
+        if !error.is_unauthorized() {
+            return Err(error.to_string());
+        }
+        let refreshed = coordinator
+            .refresh_after_unauthorized(account_id, &access_token)
+            .await
+            .map_err(|refresh_error| refresh_error.to_string())?;
+        let new_access_token = refreshed
+            .account
+            .token
             .as_ref()
-            .ok_or_else(|| "No refresh token available".to_string())?;
-        match oauth::refresh_token(refresh_token_value).await {
-            Ok(response) => {
-                let now = chrono::Utc::now().timestamp();
-                TokenData::new(
-                    response.access_token,
-                    response
-                        .refresh_token
-                        .or_else(|| account_token.refresh_token.clone()),
-                    response.id_token.or_else(|| account_token.id_token.clone()),
-                    response.expires_in,
-                    now + response.expires_in,
-                    response.token_type,
-                )
-            }
-            Err(e) => {
-                if e.contains("refresh_token_reused") || e.contains("invalid_grant") {
-                    account.rt_invalid = true;
-                    account.rt_invalid_reason = extract_rt_invalid_reason(&e);
-                }
-                return Err(e);
-            }
-        }
-    } else {
-        match oauth::ensure_fresh_token_with_window(account_token, refresh_window_secs).await {
-            Ok(token) => token,
-            Err(e) => {
-                if e.contains("refresh_token_reused") || e.contains("invalid_grant") {
-                    account.rt_invalid = true;
-                    account.rt_invalid_reason = extract_rt_invalid_reason(&e);
-                }
-                return Err(e);
-            }
-        }
+            .map(|token| token.access_token.clone())
+            .ok_or_else(|| "OAuth account missing token".to_string())?;
+        quota::consume_reset_credit(
+            &new_access_token,
+            refreshed.account.chatgpt_account_id.as_deref(),
+        )
+        .await
+        .map_err(|retry_error| retry_error.to_string())?;
     };
 
-    if let Some(ref account_token) = account.token {
-        if new_token.access_token == account_token.access_token
-            && new_token.expires_at == account_token.expires_at
-        {
-            return Ok(false);
-        }
-    }
-
-    account.token = Some(new_token);
-    account.updated_at = chrono::Utc::now().timestamp();
-    account.rt_invalid = false;
-    account.rt_invalid_reason = None;
-
-    Ok(true)
+    refresh_quota_and_backfill_locked(app, account_id, &coordinator).await
 }
 
 fn has_empty_openai_auth_json(account: &Account) -> bool {

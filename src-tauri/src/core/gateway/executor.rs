@@ -7,19 +7,18 @@
 use bytes::Bytes;
 use reqwest::Method;
 use serde_json::{Value, json};
+use tauri::Manager;
 use warp::http::HeaderMap;
 
 use super::canonical::CanonicalRequest;
 use super::config::{ChannelKind, GatewayChannel};
 use super::translate::stream_bridge::outbound_for;
+use crate::AppState;
 use crate::platforms::openai::codex::upstream::{
     CODEX_UPSTREAM_ORIGIN, apply_forward_headers, build_upstream_url, format_transport_error,
 };
-use crate::platforms::openai::modules::{account as account_mod, storage as account_storage};
+use crate::platforms::openai::models::Account;
 use crate::proxy_helper::ProxyClient;
-
-/// OAuth token 续期窗口：到期前 5 分钟内提前刷新
-const TOKEN_REFRESH_WINDOW_SECS: i64 = 300;
 
 /// 渠道执行错误
 #[derive(Debug)]
@@ -90,45 +89,91 @@ impl GatewayExecutor {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| GatewayError::Credential("Codex 渠道未绑定账号".into()))?;
 
-        let mut account = account_storage::load_account(&self.app_handle, account_id)
+        let coordinator = self
+            .app_handle
+            .state::<AppState>()
+            .openai_token_coordinator
+            .clone();
+        let resolved = coordinator
+            .ensure_fresh(account_id, 300)
             .await
-            .map_err(GatewayError::Credential)?;
+            .map_err(|error| GatewayError::Credential(format!("Token 刷新失败: {}", error)))?;
+        let rejected_access_token = resolved
+            .account
+            .token
+            .as_ref()
+            .map(|token| token.access_token.clone())
+            .ok_or_else(|| GatewayError::Credential("OAuth 账号缺少 token".into()))?;
 
-        // 转发前 token 有效性校验与刷新（复用 openai 平台逻辑），刷新成功则回存
-        match account_mod::refresh_token_if_needed(&mut account, TOKEN_REFRESH_WINDOW_SECS, false)
-            .await
-        {
-            Ok(true) => {
-                let _ = account_storage::save_account(&self.app_handle, &account).await;
-            }
-            Ok(false) => {}
-            Err(e) => return Err(GatewayError::Credential(format!("Token 刷新失败: {}", e))),
+        let url = build_upstream_url(CODEX_UPSTREAM_ORIGIN, "/backend-api/codex/responses", None);
+        // 规整为 codex 后端可接受的 Responses 请求体（input 数组化 / 补 instructions / stream=true）
+        let body = normalize_codex_body(body);
+        let response = self
+            .send_codex_once(&url, body.clone(), &resolved.account)
+            .await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            self.persist_codex_forbidden(&coordinator, account_id, response.status())
+                .await;
+            return Ok(response);
         }
 
+        let refreshed = match coordinator
+            .refresh_after_unauthorized(account_id, &rejected_access_token)
+            .await
+        {
+            Ok(resolution) => resolution,
+            Err(_) => return Ok(response),
+        };
+        let response = self.send_codex_once(&url, body, &refreshed.account).await?;
+        self.persist_codex_forbidden(&coordinator, account_id, response.status())
+            .await;
+        Ok(response)
+    }
+
+    async fn send_codex_once(
+        &self,
+        url: &str,
+        body: Bytes,
+        account: &Account,
+    ) -> Result<reqwest::Response, GatewayError> {
         let access_token = account
             .token
             .as_ref()
-            .map(|t| t.access_token.clone())
+            .map(|token| token.access_token.as_str())
             .ok_or_else(|| GatewayError::Credential("OAuth 账号缺少 token".into()))?;
         let chatgpt_account_id = account
             .chatgpt_account_id
-            .clone()
-            .unwrap_or_else(|| account.email.clone());
-
-        let url = build_upstream_url(CODEX_UPSTREAM_ORIGIN, "/backend-api/codex/responses", None);
-        let builder = self.client.request(Method::POST, &url);
-        // 规整为 codex 后端可接受的 Responses 请求体（input 数组化 / 补 instructions / stream=true）
-        let body = normalize_codex_body(body);
-        // 空入站头：仅注入 codex 鉴权与默认头（User-Agent / OpenAI-Beta / originator）
-        let builder = apply_forward_headers(
-            builder,
-            &HeaderMap::new(),
-            &access_token,
-            &chatgpt_account_id,
-        )
-        .header("Content-Type", "application/json")
-        .body(body);
+            .as_deref()
+            .unwrap_or(account.email.as_str());
+        let builder = self.client.request(Method::POST, url);
+        let builder =
+            apply_forward_headers(builder, &HeaderMap::new(), access_token, chatgpt_account_id)
+                .header("Content-Type", "application/json")
+                .body(body);
         send_builder(builder).await
+    }
+
+    async fn persist_codex_forbidden(
+        &self,
+        coordinator: &crate::platforms::openai::modules::token_coordinator::OAuthTokenCoordinator,
+        account_id: &str,
+        status: reqwest::StatusCode,
+    ) {
+        if !matches!(
+            status,
+            reqwest::StatusCode::PAYMENT_REQUIRED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return;
+        }
+
+        let _ = coordinator
+            .update_account(account_id, "gateway-upstream-forbidden", |account| {
+                account
+                    .quota
+                    .get_or_insert_with(Default::default)
+                    .is_forbidden = true;
+            })
+            .await;
     }
 
     /// OpenaiCompat：Base URL + Bearer Key，按线型选 /chat/completions 或 /responses

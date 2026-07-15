@@ -23,7 +23,6 @@ use super::{
     storage::CodexLogStorage,
 };
 use crate::AppState;
-use crate::data::storage::common::traits::AccountStorage;
 
 // ==================== 不支持参数缓存 ====================
 
@@ -74,13 +73,6 @@ impl UnsupportedParamCache {
             }
         }
 
-        if !params.is_empty() {
-            println!(
-                "[Codex] Loaded {} cached unsupported params: {:?}",
-                params.len(),
-                params
-            );
-        }
         Self {
             params: RwLock::new(params),
             file_path,
@@ -90,8 +82,7 @@ impl UnsupportedParamCache {
     /// 添加一个不支持的参数，同时写入磁盘
     pub async fn add(&self, param: String) {
         let mut set = self.params.write().await;
-        if set.insert(param.clone()) {
-            println!("[Codex] Caching unsupported param: {}", param);
+        if set.insert(param) {
             let vec: Vec<&String> = set.iter().collect();
             if let Ok(json) = serde_json::to_string_pretty(&vec) {
                 let _ = std::fs::write(&self.file_path, json);
@@ -210,7 +201,6 @@ async fn handle_passthrough(
     state: Arc<AppState>,
 ) -> Result<Box<dyn Reply>, Rejection> {
     let path = full_path.as_str().to_string();
-    println!("[Codex Server] Incoming request: {} {}", method, path);
     if !is_supported_proxy_path(&path) {
         return Err(warp::reject::not_found());
     }
@@ -285,17 +275,6 @@ async fn handle_passthrough(
             .unwrap_or(StatusCode::BAD_GATEWAY);
         let upstream_headers = upstream_response.headers().clone();
 
-        // 如果是 402/403，异步更新数据库中的 forbidden 状态
-        if upstream_status == StatusCode::PAYMENT_REQUIRED
-            || upstream_status == StatusCode::FORBIDDEN
-        {
-            let state_clone = state.clone();
-            let account_id = meta.account_id.clone();
-            tokio::spawn(async move {
-                mark_account_forbidden(&state_clone, &account_id).await;
-            });
-        }
-
         // 对于非流式响应，检查是否包含 "Unsupported parameter" 错误并自动重试
         if is_responses
             && retries < MAX_UNSUPPORTED_PARAM_RETRIES
@@ -321,12 +300,6 @@ async fn handle_passthrough(
             };
 
             if let Some(param) = extract_unsupported_param(&peek_bytes) {
-                println!(
-                    "[Codex] Upstream rejected unsupported param '{}', stripping and retrying ({}/{})",
-                    param,
-                    retries + 1,
-                    MAX_UNSUPPORTED_PARAM_RETRIES
-                );
                 state.codex_unsupported_params.add(param.clone()).await;
                 body = remove_json_key(&body, &param);
                 retries += 1;
@@ -1098,29 +1071,6 @@ async fn record_log(
     // 同时写入 SQLite 存储
     if let Some(s) = storage {
         s.add_log(log).await;
-    }
-}
-
-/// 更新账户的 forbidden 状态到数据库
-async fn mark_account_forbidden(state: &Arc<AppState>, account_id: &str) {
-    let storage = {
-        let guard = state.openai_storage_manager.lock().unwrap();
-        guard.clone()
-    };
-    let Some(storage) = storage else {
-        return;
-    };
-
-    // 获取账户并更新 quota.is_forbidden
-    if let Ok(Some(mut account)) = storage.get_account(account_id).await {
-        if let Some(ref mut quota) = account.quota {
-            quota.is_forbidden = true;
-        } else {
-            let mut quota = crate::platforms::openai::models::QuotaData::new();
-            quota.is_forbidden = true;
-            account.quota = Some(quota);
-        }
-        let _ = storage.update_account(&account).await;
     }
 }
 

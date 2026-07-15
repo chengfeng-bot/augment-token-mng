@@ -68,6 +68,18 @@
             >
               <span class="pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-text-inverse shadow transition duration-200" :class="isEnabled(c) ? 'translate-x-[18px]' : 'translate-x-0.5'" />
             </button>
+            <button
+              v-if="c.kind === 'codex_oauth' && c.accountId"
+              class="btn btn--icon-sm btn--ghost"
+              :disabled="isRefreshingQuota(c.accountId)"
+              v-tooltip="$t('platform.openai.actions.refreshQuota')"
+              @click="refreshChannelQuota(c)"
+            >
+              <svg v-if="!isRefreshingQuota(c.accountId)" width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+              </svg>
+              <span v-else class="btn-spinner btn-spinner--sm text-accent"></span>
+            </button>
             <button class="btn btn--icon-sm btn--ghost" v-tooltip="$t('common.edit')" @click="openEdit(c)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
             </button>
@@ -172,6 +184,7 @@
 <script setup>
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { invoke } from '@tauri-apps/api/core'
 import { useGatewayStore } from '../../stores/gateway'
 import { useGatewayPricing } from '../../composables/useGatewayPricing'
 import ChannelDialog from './ChannelDialog.vue'
@@ -184,6 +197,30 @@ const { recordCost } = useGatewayPricing()
 const showDialog = ref(false)
 const showRoutePreview = ref(false)
 const editing = ref(null)
+const refreshingQuotaAccountIds = ref({})
+
+const isRefreshingQuota = (accountId) => Boolean(refreshingQuotaAccountIds.value[accountId])
+
+// 与 OpenAIAccountManager.handleRefreshQuota 一致：拉取配额并写回本地账号数据
+const refreshChannelQuota = async (c) => {
+  if (c.kind !== 'codex_oauth' || !c.accountId || isRefreshingQuota(c.accountId)) return
+  refreshingQuotaAccountIds.value = { ...refreshingQuotaAccountIds.value, [c.accountId]: true }
+  try {
+    const updatedAccount = await invoke('openai_fetch_quota', { accountId: c.accountId })
+    store.upsertCodexAccount(updatedAccount)
+    window.$notify?.success(t('platform.openai.messages.quotaRefreshSuccess'))
+  } catch (error) {
+    try {
+      const reloaded = await invoke('openai_load_account', { accountId: c.accountId })
+      store.upsertCodexAccount(reloaded)
+    } catch {}
+    window.$notify?.error(t('platform.openai.messages.quotaRefreshFailed', { error: error?.message || error }))
+  } finally {
+    const next = { ...refreshingQuotaAccountIds.value }
+    delete next[c.accountId]
+    refreshingQuotaAccountIds.value = next
+  }
+}
 
 // 按渠道聚合用量：近 10 次请求状态 + 整体成功率 + 总请求/Tokens/费用（含今日新增）
 const statsMap = computed(() => {

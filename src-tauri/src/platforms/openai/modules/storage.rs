@@ -48,6 +48,17 @@ pub async fn load_account(
     account.ok_or_else(|| format!("Account not found: {}", account_id))
 }
 
+pub async fn load_optional_account(
+    app_handle: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<Option<Account>, String> {
+    let manager = get_storage_manager(app_handle).await?;
+    manager
+        .get_account(account_id)
+        .await
+        .map_err(|e| format!("Failed to load account: {}", e))
+}
+
 pub async fn save_account(app_handle: &tauri::AppHandle, account: &Account) -> Result<(), String> {
     let manager = get_storage_manager(app_handle).await?;
     manager

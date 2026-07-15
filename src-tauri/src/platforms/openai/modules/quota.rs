@@ -12,18 +12,32 @@ const CHATGPT_RESET_CREDITS_URL: &str =
 const CHATGPT_RESET_CREDITS_CONSUME_URL: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 
+#[derive(Debug, thiserror::Error)]
+pub enum QuotaError {
+    #[error("{0}")]
+    Client(String),
+    #[error("Request failed: {0}")]
+    Transport(String),
+    #[error("HTTP {status}: {message}")]
+    Http { status: u16, message: String },
+    #[error("{0}")]
+    Parse(String),
+    #[error("no available reset credit")]
+    NoAvailableResetCredit,
+}
+
+impl QuotaError {
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, Self::Http { status: 401, .. })
+    }
+}
+
 /// Fetch OpenAI quota from ChatGPT wham usage API.
 pub async fn fetch_quota(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Result<QuotaData, String> {
-    println!("=== OpenAI fetch_quota ===");
-    println!(
-        "access_token: {}...",
-        &access_token.chars().take(20).collect::<String>()
-    );
-
-    let client = create_proxy_client()?;
+) -> Result<QuotaData, QuotaError> {
+    let client = create_proxy_client().map_err(QuotaError::Client)?;
     let resolved_account_id = resolve_chatgpt_account_id(chatgpt_account_id, access_token);
 
     let mut request_builder = client
@@ -35,28 +49,28 @@ pub async fn fetch_quota(
         request_builder = request_builder.header("chatgpt-account-id", account_id);
     }
 
-    let max_retries = 2;
-    let mut last_error: Option<String> = None;
+    let max_attempts = 2;
+    let mut last_error: Option<QuotaError> = None;
 
-    for attempt in 1..=max_retries {
+    for attempt in 1..=max_attempts {
         let request = request_builder
             .try_clone()
-            .ok_or_else(|| "failed to clone wham usage request".to_string())?;
+            .ok_or_else(|| QuotaError::Client("failed to clone wham usage request".to_string()))?;
 
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
-                println!("Response status (attempt {}): {}", attempt, status);
 
                 if status == reqwest::StatusCode::UNAUTHORIZED {
-                    println!("Token expired or invalid (401)");
-                    return Err("HTTP 401: Token expired or invalid".to_string());
+                    return Err(QuotaError::Http {
+                        status: 401,
+                        message: "Token expired or invalid".to_string(),
+                    });
                 }
 
                 if status == reqwest::StatusCode::PAYMENT_REQUIRED
                     || status == reqwest::StatusCode::FORBIDDEN
                 {
-                    println!("Account is forbidden ({})", status);
                     let mut quota = QuotaData::new();
                     quota.is_forbidden = true;
                     return Ok(quota);
@@ -65,58 +79,45 @@ pub async fn fetch_quota(
                 let body = response.text().await.unwrap_or_default();
 
                 if status.is_success() {
-                    match serde_json::from_str::<WhamUsageResponse>(&body) {
-                        Ok(wham) => {
-                            let mut quota = QuotaData::from_wham_usage(&wham);
-                            println!("Successfully parsed quota from wham response");
-                            println!("  5h used: {:?}%", quota.codex_5h_used_percent);
-                            println!("  7d used: {:?}%", quota.codex_7d_used_percent);
-                            // 旁路拉取限流重置券（尽力而为，失败不影响配额结果）
-                            attach_reset_credits(
-                                &mut quota,
-                                access_token,
-                                resolved_account_id.as_deref(),
-                            )
-                            .await;
-                            return Ok(quota);
-                        }
-                        Err(e) => {
-                            let msg = format!(
+                    let wham =
+                        serde_json::from_str::<WhamUsageResponse>(&body).map_err(|error| {
+                            QuotaError::Parse(format!(
                                 "Failed to parse wham usage response: {}; body: {}",
-                                e,
+                                error,
                                 truncate_for_error(&body)
-                            );
-                            println!("{}", msg);
-                            last_error = Some(msg);
-                        }
-                    }
-                } else {
-                    let msg = format_http_error(status, &body);
-                    println!("{}", msg);
-                    last_error = Some(msg);
+                            ))
+                        })?;
+                    let mut quota = QuotaData::from_wham_usage(&wham);
+                    attach_reset_credits(&mut quota, access_token, resolved_account_id.as_deref())
+                        .await;
+                    return Ok(quota);
                 }
+
+                let error = http_error(status, &body);
+                if attempt == max_attempts || !is_retryable_status(status) {
+                    return Err(error);
+                }
+                last_error = Some(error);
             }
             Err(e) => {
-                println!("Request failed (attempt {}): {}", attempt, e);
-                last_error = Some(format!("Request failed: {}", e));
-                if attempt < max_retries {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
+                last_error = Some(QuotaError::Transport(e.to_string()));
             }
+        }
+
+        if attempt < max_attempts {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
-    let final_error = last_error.unwrap_or_else(|| "Quota fetch failed after retries".to_string());
-    println!("Quota fetch failed: {}", final_error);
-    Err(final_error)
+    Err(last_error.unwrap_or_else(|| QuotaError::Client("Quota fetch failed after retries".into())))
 }
 
 /// 拉取限流重置券列表（`GET /wham/rate-limit-reset-credits`）
 pub async fn fetch_reset_credits(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Result<CodexResetCreditsResponse, String> {
-    let client = create_proxy_client()?;
+) -> Result<CodexResetCreditsResponse, QuotaError> {
+    let client = create_proxy_client().map_err(QuotaError::Client)?;
     let mut builder = client
         .get(CHATGPT_RESET_CREDITS_URL)
         .header("authorization", format!("Bearer {}", access_token))
@@ -130,18 +131,18 @@ pub async fn fetch_reset_credits(
     let response = builder
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| QuotaError::Transport(e.to_string()))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format_http_error(status, &body));
+        return Err(http_error(status, &body));
     }
     serde_json::from_str::<CodexResetCreditsResponse>(&body).map_err(|e| {
-        format!(
+        QuotaError::Parse(format!(
             "Failed to parse reset-credits response: {}; body: {}",
             e,
             truncate_for_error(&body)
-        )
+        ))
     })
 }
 
@@ -149,16 +150,16 @@ pub async fn fetch_reset_credits(
 pub async fn consume_reset_credit(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Result<CodexResetConsumeResponse, String> {
+) -> Result<CodexResetConsumeResponse, QuotaError> {
     let list = fetch_reset_credits(access_token, chatgpt_account_id).await?;
     let credit_id = list
         .credits
         .iter()
         .find(|c| c.status.as_deref() == Some("available"))
         .and_then(|c| c.id.clone())
-        .ok_or_else(|| "no available reset credit".to_string())?;
+        .ok_or(QuotaError::NoAvailableResetCredit)?;
 
-    let client = create_proxy_client()?;
+    let client = create_proxy_client().map_err(QuotaError::Client)?;
     let mut builder = client
         .post(CHATGPT_RESET_CREDITS_CONSUME_URL)
         .header("authorization", format!("Bearer {}", access_token))
@@ -179,18 +180,18 @@ pub async fn consume_reset_credit(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| QuotaError::Transport(e.to_string()))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format_http_error(status, &body));
+        return Err(http_error(status, &body));
     }
     serde_json::from_str::<CodexResetConsumeResponse>(&body).map_err(|e| {
-        format!(
+        QuotaError::Parse(format!(
             "Failed to parse reset-credits consume response: {}; body: {}",
             e,
             truncate_for_error(&body)
-        )
+        ))
     })
 }
 
@@ -212,10 +213,14 @@ async fn attach_reset_credits(
             quota.reset_credits_total = Some(total);
             quota.reset_credits_available = Some(available);
         }
-        Err(e) => {
-            println!("Fetch reset credits failed (ignored): {}", e);
-        }
+        Err(_) => {}
     }
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 fn resolve_chatgpt_account_id(
@@ -259,14 +264,18 @@ fn decode_base64_url(value: &str) -> Option<Vec<u8>> {
     general_purpose::URL_SAFE.decode(padded.as_bytes()).ok()
 }
 
-fn format_http_error(status: reqwest::StatusCode, body: &str) -> String {
+fn http_error(status: reqwest::StatusCode, body: &str) -> QuotaError {
     let (code, message) = parse_error_code_and_message(body);
 
-    match (code, message) {
-        (Some(code), Some(message)) => format!("HTTP {} [{}]: {}", status, code, message),
-        (Some(code), None) => format!("HTTP {} [{}]: {}", status, code, truncate_for_error(body)),
-        (None, Some(message)) => format!("HTTP {}: {}", status, message),
-        (None, None) => format!("HTTP {}: {}", status, truncate_for_error(body)),
+    let message = match (code, message) {
+        (Some(code), Some(message)) => format!("[{}]: {}", code, message),
+        (Some(code), None) => format!("[{}]: {}", code, truncate_for_error(body)),
+        (None, Some(message)) => message,
+        (None, None) => truncate_for_error(body),
+    };
+    QuotaError::Http {
+        status: status.as_u16(),
+        message,
     }
 }
 

@@ -1,5 +1,7 @@
 use crate::data::storage::common::{AccountDbMapper, StorageError};
-use crate::platforms::openai::models::{Account, AccountType, ApiConfig, QuotaData, TokenData};
+use crate::platforms::openai::models::{
+    Account, AccountType, ApiConfig, QuotaData, QuotaRefreshState, QuotaStatus, TokenData,
+};
 use tokio_postgres::Row;
 
 /// OpenAI 账号数据库映射器
@@ -60,9 +62,23 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
         // 检查是否有配额字段（通过检查 codex_usage_updated_at 字段是否存在）
         // is_forbidden 在索引 34
         let is_forbidden: bool = row.try_get(34).unwrap_or(false);
+        let quota_status = match row
+            .try_get::<_, Option<String>>(38)
+            .ok()
+            .flatten()
+            .as_deref()
+        {
+            Some("available") => QuotaStatus::Available,
+            Some("warning") => QuotaStatus::Warning,
+            Some("exhausted") => QuotaStatus::Exhausted,
+            _ => QuotaStatus::Unknown,
+        };
         let quota = if row.len() > 18 {
             // 有配额字段
             let quota_data = QuotaData {
+                status: quota_status,
+                allowed: row.try_get(39).ok().flatten(),
+                limit_reached: row.try_get(40).ok().flatten(),
                 codex_5h_used_percent: row.try_get(18).ok().flatten(),
                 codex_5h_reset_after_seconds: row.try_get(19).ok().flatten(),
                 codex_5h_window_minutes: row.try_get(20).ok().flatten(),
@@ -72,8 +88,8 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
                 codex_primary_over_secondary_percent: row.try_get(24).ok().flatten(),
                 codex_usage_updated_at: row.try_get(25).unwrap_or(chrono::Utc::now().timestamp()),
                 is_forbidden,
-                reset_credits_available: None,
-                reset_credits_total: None,
+                reset_credits_available: row.try_get(41).ok().flatten(),
+                reset_credits_total: row.try_get(42).ok().flatten(),
             };
             if quota_data.is_valid() || is_forbidden {
                 Some(quota_data)
@@ -92,6 +108,15 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
 
         let rt_invalid: bool = row.try_get(35).unwrap_or(false);
         let rt_invalid_reason: Option<String> = row.try_get(36).ok().flatten();
+        let consecutive_failures = row.try_get::<_, i64>(46).unwrap_or(0).max(0) as u32;
+        let quota_refresh = QuotaRefreshState {
+            last_attempt_at: row.try_get(43).ok().flatten(),
+            last_success_at: row.try_get(44).ok().flatten(),
+            next_check_at: row.try_get(45).ok().flatten(),
+            consecutive_failures,
+            last_error: row.try_get(47).ok().flatten(),
+            stale_after: row.try_get(48).ok().flatten(),
+        };
 
         Ok(Account {
             id: row.get(0),
@@ -105,6 +130,7 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
             organization_id: row.get(10),
             openai_auth_json: row.try_get(33).ok().flatten(),
             quota,
+            quota_refresh,
             tag: row.try_get(16).ok().flatten(),
             tag_color: row.try_get(17).ok().flatten(),
             created_at: row.get(11),
@@ -125,7 +151,10 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
          codex_7d_used_percent, codex_7d_reset_after_seconds, codex_7d_window_minutes, \
          codex_primary_over_secondary_percent, codex_usage_updated_at, \
          account_type, model_provider, model, model_reasoning_effort, wire_api, base_url, api_key, \
-         openai_auth_json, is_forbidden, rt_invalid, rt_invalid_reason, reverse_proxy_enabled"
+         openai_auth_json, is_forbidden, rt_invalid, rt_invalid_reason, reverse_proxy_enabled, \
+         quota_status, quota_allowed, quota_limit_reached, reset_credits_available, reset_credits_total, \
+         quota_last_attempt_at, quota_last_success_at, quota_next_check_at, quota_consecutive_failures, \
+         quota_last_error, quota_stale_after"
     }
 
     fn insert_sql() -> &'static str {
@@ -136,8 +165,12 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
              version, deleted, tag, tag_color, codex_5h_used_percent, codex_5h_reset_after_seconds, codex_5h_window_minutes,
              codex_7d_used_percent, codex_7d_reset_after_seconds, codex_7d_window_minutes,
              codex_primary_over_secondary_percent, codex_usage_updated_at, account_type,
-             model_provider, model, model_reasoning_effort, wire_api, base_url, api_key, openai_auth_json, is_forbidden, rt_invalid, rt_invalid_reason, reverse_proxy_enabled)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38)
+             model_provider, model, model_reasoning_effort, wire_api, base_url, api_key, openai_auth_json,
+             is_forbidden, rt_invalid, rt_invalid_reason, reverse_proxy_enabled, quota_status,
+             quota_allowed, quota_limit_reached, reset_credits_available, reset_credits_total,
+             quota_last_attempt_at, quota_last_success_at, quota_next_check_at,
+             quota_consecutive_failures, quota_last_error, quota_stale_after)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49)
         ON CONFLICT (id) DO UPDATE SET
             email = EXCLUDED.email,
             access_token = EXCLUDED.access_token,
@@ -174,7 +207,18 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
             is_forbidden = EXCLUDED.is_forbidden,
             rt_invalid = EXCLUDED.rt_invalid,
             rt_invalid_reason = EXCLUDED.rt_invalid_reason,
-            reverse_proxy_enabled = EXCLUDED.reverse_proxy_enabled
+            reverse_proxy_enabled = EXCLUDED.reverse_proxy_enabled,
+            quota_status = EXCLUDED.quota_status,
+            quota_allowed = EXCLUDED.quota_allowed,
+            quota_limit_reached = EXCLUDED.quota_limit_reached,
+            reset_credits_available = EXCLUDED.reset_credits_available,
+            reset_credits_total = EXCLUDED.reset_credits_total,
+            quota_last_attempt_at = EXCLUDED.quota_last_attempt_at,
+            quota_last_success_at = EXCLUDED.quota_last_success_at,
+            quota_next_check_at = EXCLUDED.quota_next_check_at,
+            quota_consecutive_failures = EXCLUDED.quota_consecutive_failures,
+            quota_last_error = EXCLUDED.quota_last_error,
+            quota_stale_after = EXCLUDED.quota_stale_after
         "#
     }
 
@@ -191,6 +235,11 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
             codex_7d_window_minutes,
             codex_primary_over_secondary_percent,
             codex_usage_updated_at,
+            quota_status,
+            quota_allowed,
+            quota_limit_reached,
+            reset_credits_available,
+            reset_credits_total,
         ) = if let Some(ref quota) = account.quota {
             (
                 quota.codex_5h_used_percent,
@@ -201,6 +250,19 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
                 quota.codex_7d_window_minutes,
                 quota.codex_primary_over_secondary_percent,
                 quota.codex_usage_updated_at,
+                Some(
+                    match quota.status {
+                        QuotaStatus::Unknown => "unknown",
+                        QuotaStatus::Available => "available",
+                        QuotaStatus::Warning => "warning",
+                        QuotaStatus::Exhausted => "exhausted",
+                    }
+                    .to_string(),
+                ),
+                quota.allowed,
+                quota.limit_reached,
+                quota.reset_credits_available,
+                quota.reset_credits_total,
             )
         } else {
             (
@@ -212,6 +274,11 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
                 None,
                 None,
                 chrono::Utc::now().timestamp(),
+                None,
+                None,
+                None,
+                None,
+                None,
             )
         };
 
@@ -294,6 +361,17 @@ impl AccountDbMapper<Account> for OpenAIAccountMapper {
             Box::new(account.rt_invalid),
             Box::new(account.rt_invalid_reason.clone()),
             Box::new(account.reverse_proxy_enabled),
+            Box::new(quota_status),
+            Box::new(quota_allowed),
+            Box::new(quota_limit_reached),
+            Box::new(reset_credits_available),
+            Box::new(reset_credits_total),
+            Box::new(account.quota_refresh.last_attempt_at),
+            Box::new(account.quota_refresh.last_success_at),
+            Box::new(account.quota_refresh.next_check_at),
+            Box::new(account.quota_refresh.consecutive_failures as i64),
+            Box::new(account.quota_refresh.last_error.clone()),
+            Box::new(account.quota_refresh.stale_after),
         ]
     }
 }

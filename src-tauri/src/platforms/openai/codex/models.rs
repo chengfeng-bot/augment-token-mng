@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::platforms::openai::models::QuotaStatus;
+
 // ==================== 号池相关 ====================
 
 /// Codex 号池中的账号
@@ -12,21 +14,10 @@ pub struct CodexPoolAccount {
     // ===== 基本信息 =====
     pub id: String,
     pub email: String,
-
-    // ===== Token 信息 =====
-    pub access_token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id_token: Option<String>,
+    #[serde(default)]
     pub expires_at: i64,
-
-    // ===== OpenAI 账号信息 =====
-    pub chatgpt_account_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chatgpt_user_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization_id: Option<String>,
+    #[serde(default)]
+    pub has_refresh_token: bool,
 
     // ===== 状态信息 =====
     pub is_active: bool,
@@ -58,6 +49,10 @@ pub struct CodexPoolAccount {
     /// 7d 窗口已用百分比 (0-100)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_7d_used_percent: Option<f64>,
+    #[serde(default)]
+    pub quota_status: QuotaStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_stale_after: Option<i64>,
     /// 订阅计划类型 (team / plus / pro / free)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_type: Option<String>,
@@ -83,6 +78,9 @@ impl CodexPoolAccount {
         }
 
         let token = account.token.as_ref()?;
+        if token.refresh_token.is_none() && token.expires_at <= chrono::Utc::now().timestamp() {
+            return None;
+        }
 
         // 跳过被禁用的账号
         if account
@@ -121,6 +119,12 @@ impl CodexPoolAccount {
         // 提取配额百分比
         let codex_5h_used_percent = account.quota.as_ref().and_then(|q| q.codex_5h_used_percent);
         let codex_7d_used_percent = account.quota.as_ref().and_then(|q| q.codex_7d_used_percent);
+        let quota_status = account
+            .quota
+            .as_ref()
+            .map(|quota| quota.status)
+            .unwrap_or_default();
+        let quota_stale_after = account.quota_refresh.stale_after;
 
         // 从 quota 获取 is_forbidden
         let is_forbidden = account
@@ -132,17 +136,9 @@ impl CodexPoolAccount {
         Some(Self {
             id: account.id.clone(),
             email: account.email.clone(),
-            access_token: token.access_token.clone(),
-            refresh_token: token.refresh_token.clone(),
-            id_token: token.id_token.clone(),
             expires_at: token.expires_at,
-            chatgpt_account_id: account
-                .chatgpt_account_id
-                .clone()
-                .unwrap_or_else(|| account.email.clone()),
-            chatgpt_user_id: account.chatgpt_user_id.clone(),
-            organization_id: account.organization_id.clone(),
-            is_active: !Self::token_is_expired(token),
+            has_refresh_token: token.refresh_token.is_some(),
+            is_active: true,
             is_forbidden,
             last_used: Some(account.last_used),
             last_refresh: None,
@@ -154,17 +150,13 @@ impl CodexPoolAccount {
             total_tokens_used: 0,
             codex_5h_used_percent,
             codex_7d_used_percent,
+            quota_status,
+            quota_stale_after,
             plan_type,
             subscription_expires_at,
             tag: account.tag.clone(),
             tag_color: account.tag_color.clone(),
         })
-    }
-
-    /// 检查 token 是否已过期
-    pub fn is_expired(&self) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        self.expires_at <= now
     }
 
     /// 检查账号是否处于冷却状态
@@ -175,12 +167,17 @@ impl CodexPoolAccount {
 
     /// 检查账号是否可用于请求
     pub fn is_available(&self) -> bool {
-        self.is_active && !self.is_forbidden && !self.is_expired() && !self.is_in_cooldown()
+        (self.has_refresh_token || self.expires_at > chrono::Utc::now().timestamp())
+            && self.is_active
+            && !self.is_forbidden
+            && (self.quota_status != QuotaStatus::Exhausted || self.is_quota_stale())
+            && !self.is_in_cooldown()
     }
 
-    fn token_is_expired(token: &crate::platforms::openai::models::TokenData) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        token.expires_at <= now
+    pub fn is_quota_stale(&self) -> bool {
+        self.quota_stale_after
+            .map(|stale_after| stale_after <= chrono::Utc::now().timestamp())
+            .unwrap_or(true)
     }
 
     /// 更新使用统计

@@ -21,6 +21,55 @@ const SESSION_TTL_SECS: u64 = 30 * 60;
 const CHATGPT_ACCOUNTS_CHECK_URL: &str =
     "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshTokenInvalidReason {
+    RefreshTokenReused,
+    InvalidGrant,
+}
+impl RefreshTokenInvalidReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RefreshTokenReused => "refresh_token_reused",
+            Self::InvalidGrant => "invalid_grant",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OAuthRefreshError {
+    #[error("Failed to create OAuth client: {0}")]
+    Client(String),
+    #[error("Refresh request failed: {0}")]
+    Transport(String),
+    #[error("Failed to parse refresh response: {0}")]
+    Parse(String),
+    #[error("Token refresh failed (HTTP {status}): {code}: {description}")]
+    Response {
+        status: u16,
+        code: String,
+        description: String,
+    },
+}
+
+impl OAuthRefreshError {
+    pub fn invalid_reason(&self) -> Option<RefreshTokenInvalidReason> {
+        let Self::Response {
+            code, description, ..
+        } = self
+        else {
+            return None;
+        };
+        let combined = format!("{} {}", code, description).to_ascii_lowercase();
+        if combined.contains("refresh_token_reused") {
+            Some(RefreshTokenInvalidReason::RefreshTokenReused)
+        } else if code.eq_ignore_ascii_case("invalid_grant") || combined.contains("invalid_grant") {
+            Some(RefreshTokenInvalidReason::InvalidGrant)
+        } else {
+            None
+        }
+    }
+}
+
 fn generate_random_bytes(length: usize) -> Vec<u8> {
     let mut rng = rand::thread_rng();
     (0..length).map(|_| rng.r#gen()).collect()
@@ -135,8 +184,8 @@ pub async fn exchange_code(
     }
 }
 
-pub async fn refresh_token(refresh_token: &str) -> Result<TokenResponse, String> {
-    let client = create_proxy_client()?;
+pub async fn refresh_token(refresh_token: &str) -> Result<TokenResponse, OAuthRefreshError> {
+    let client = create_proxy_client().map_err(OAuthRefreshError::Client)?;
     let mut params = HashMap::new();
     params.insert("grant_type", "refresh_token");
     params.insert("refresh_token", refresh_token);
@@ -148,16 +197,49 @@ pub async fn refresh_token(refresh_token: &str) -> Result<TokenResponse, String>
         .form(&params)
         .send()
         .await
-        .map_err(|e| format!("Refresh request failed: {}", e))?;
+        .map_err(|e| OAuthRefreshError::Transport(e.to_string()))?;
 
     if response.status().is_success() {
         response
             .json::<TokenResponse>()
             .await
-            .map_err(|e| format!("Failed to parse refresh response: {}", e))
+            .map_err(|e| OAuthRefreshError::Parse(e.to_string()))
     } else {
+        let status = response.status().as_u16();
         let error_text = response.text().await.unwrap_or_default();
-        Err(format!("Token refresh failed: {}", error_text))
+        Err(parse_refresh_error(status, error_text))
+    }
+}
+
+fn parse_refresh_error(status: u16, error_text: String) -> OAuthRefreshError {
+    let parsed = serde_json::from_str::<Value>(&error_text).ok();
+    let code = parsed
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .or_else(|| value.pointer("/error/code").and_then(Value::as_str))
+                .or_else(|| value.get("code").and_then(Value::as_str))
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "oauth_error".to_string());
+    let description = parsed
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("error_description")
+                .and_then(Value::as_str)
+                .or_else(|| value.pointer("/error/message").and_then(Value::as_str))
+                .or_else(|| value.get("message").and_then(Value::as_str))
+        })
+        .map(ToOwned::to_owned)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(error_text);
+    OAuthRefreshError::Response {
+        status,
+        code,
+        description,
     }
 }
 
@@ -400,15 +482,11 @@ pub async fn enrich_openai_auth_json_with_account_check(
     chatgpt_account_id: Option<&str>,
     openai_auth_json: &mut Option<String>,
 ) {
-    let client = match create_proxy_client() {
-        Ok(client) => client,
-        Err(e) => {
-            println!("OpenAI accounts/check client creation failed: {}", e);
-            return;
-        }
+    let Ok(client) = create_proxy_client() else {
+        return;
     };
 
-    let response = match client
+    let Ok(response) = client
         .get(CHATGPT_ACCOUNTS_CHECK_URL)
         .header("authorization", format!("Bearer {}", access_token))
         .header("origin", "https://chatgpt.com")
@@ -416,31 +494,16 @@ pub async fn enrich_openai_auth_json_with_account_check(
         .header("accept", "application/json")
         .send()
         .await
-    {
-        Ok(response) => response,
-        Err(e) => {
-            println!("OpenAI accounts/check request failed: {}", e);
-            return;
-        }
+    else {
+        return;
     };
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        println!(
-            "OpenAI accounts/check failed: status={}, body={}",
-            status,
-            body.chars().take(200).collect::<String>()
-        );
+    if !response.status().is_success() {
         return;
     }
 
-    let value = match response.json::<Value>().await {
-        Ok(value) => value,
-        Err(e) => {
-            println!("OpenAI accounts/check response parse failed: {}", e);
-            return;
-        }
+    let Ok(value) = response.json::<Value>().await else {
+        return;
     };
 
     let preferred_account_ids = [organization_id, chatgpt_account_id];
@@ -604,33 +667,4 @@ pub fn token_needs_refresh(
 ) -> bool {
     let now = chrono::Utc::now().timestamp();
     current_token.expires_at <= now + refresh_window_secs
-}
-
-pub async fn ensure_fresh_token_with_window(
-    current_token: &crate::platforms::openai::models::TokenData,
-    refresh_window_secs: i64,
-) -> Result<crate::platforms::openai::models::TokenData, String> {
-    let now = chrono::Utc::now().timestamp();
-
-    if current_token.expires_at > now + refresh_window_secs {
-        return Ok(current_token.clone());
-    }
-
-    let refresh_token_value = current_token
-        .refresh_token
-        .as_ref()
-        .ok_or_else(|| "No refresh token available".to_string())?;
-
-    let response = refresh_token(refresh_token_value).await?;
-
-    Ok(crate::platforms::openai::models::TokenData::new(
-        response.access_token,
-        response
-            .refresh_token
-            .or_else(|| current_token.refresh_token.clone()),
-        response.id_token.or_else(|| current_token.id_token.clone()),
-        response.expires_in,
-        now + response.expires_in,
-        response.token_type,
-    ))
 }

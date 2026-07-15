@@ -61,6 +61,7 @@ use crate::platforms::openai::codex::pool::CodexServerConfig;
 use crate::platforms::openai::codex::storage::CodexLogStorage;
 use crate::platforms::openai::codex::{CodexExecutor, CodexPool, CodexServer};
 use crate::platforms::openai::models::OpenAIOAuthSession;
+use crate::platforms::openai::modules::token_coordinator::OAuthTokenCoordinator;
 use database::{DatabaseConfigManager, DatabaseManager};
 use outlook::OutlookManager;
 use std::collections::HashMap;
@@ -96,6 +97,7 @@ pub struct AppState {
     pub windsurf_storage_manager: Arc<Mutex<Option<Arc<WindsurfDualStorage>>>>,
     pub cursor_storage_manager: Arc<Mutex<Option<Arc<CursorDualStorage>>>>,
     pub openai_storage_manager: Arc<Mutex<Option<Arc<OpenAIDualStorage>>>>,
+    pub openai_token_coordinator: Arc<OAuthTokenCoordinator>,
     pub subscription_storage_manager: Arc<Mutex<Option<Arc<SubscriptionDualStorage>>>>,
     pub bookmark_storage_manager: Arc<Mutex<Option<Arc<BookmarkDualStorage>>>>,
     pub claude_storage_manager: Arc<Mutex<Option<Arc<ClaudeDualStorage>>>>,
@@ -203,6 +205,9 @@ pub fn run() {
                 windsurf_storage_manager: Arc::new(Mutex::new(None)),
                 cursor_storage_manager: Arc::new(Mutex::new(None)),
                 openai_storage_manager: Arc::new(Mutex::new(None)),
+                openai_token_coordinator: Arc::new(OAuthTokenCoordinator::new(
+                    app.handle().clone(),
+                )),
                 subscription_storage_manager: Arc::new(Mutex::new(None)),
                 bookmark_storage_manager: Arc::new(Mutex::new(None)),
                 claude_storage_manager: Arc::new(Mutex::new(None)),
@@ -478,6 +483,7 @@ pub fn run() {
                         windsurf_storage_manager: state.windsurf_storage_manager.clone(),
                         cursor_storage_manager: state.cursor_storage_manager.clone(),
                         openai_storage_manager: state.openai_storage_manager.clone(),
+                        openai_token_coordinator: state.openai_token_coordinator.clone(),
                         claude_storage_manager: state.claude_storage_manager.clone(),
                         subscription_storage_manager: state.subscription_storage_manager.clone(),
                         bookmark_storage_manager: state.bookmark_storage_manager.clone(),

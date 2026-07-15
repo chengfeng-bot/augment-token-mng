@@ -6,10 +6,10 @@
 use std::collections::HashSet;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::config::GatewayConfig;
-use super::usage::UsageRecord;
+use super::usage::{GATEWAY_USAGE_CHANGED_EVENT, UsageChange, UsageRecord};
 use crate::AppState;
 use crate::platforms::openai::models::AccountType;
 use crate::platforms::openai::modules::storage as account_storage;
@@ -17,6 +17,7 @@ use crate::platforms::openai::modules::storage as account_storage;
 /// 网关复用的固定端口与端点基址
 const GATEWAY_PORT: u16 = 8766;
 const GATEWAY_ADDRESS: &str = "http://127.0.0.1:8766/gateway";
+const GATEWAY_STATUS_CHANGED_EVENT: &str = "gateway-status-changed";
 
 /// 网关运行状态（端口固定 8766）
 #[derive(Serialize)]
@@ -80,7 +81,17 @@ pub async fn gateway_set_config(
     };
     snapshot.save(&dir)?;
     for id in removed_channel_ids {
-        state.gateway_usage.delete_by_channel(&id);
+        match state.gateway_usage.delete_by_channel(&id) {
+            Ok(()) => {
+                if let Err(e) = app.emit(
+                    GATEWAY_USAGE_CHANGED_EVENT,
+                    UsageChange::ChannelRemoved { channel_id: id },
+                ) {
+                    eprintln!("[GatewayUsage] 推送渠道删除事件失败: {}", e);
+                }
+            }
+            Err(e) => eprintln!("[GatewayUsage] 删除渠道记录失败: {}", e),
+        }
     }
     Ok(())
 }
@@ -123,7 +134,11 @@ fn set_enabled(app: &AppHandle, state: &State<'_, AppState>, enabled: bool) -> R
         guard.enabled = enabled;
         guard.clone()
     };
-    snapshot.save(&dir)
+    snapshot.save(&dir)?;
+    if let Err(e) = app.emit(GATEWAY_STATUS_CHANGED_EVENT, enabled) {
+        eprintln!("[Gateway] 推送状态事件失败: {}", e);
+    }
+    Ok(())
 }
 
 /// 读取用量记录（最新在前）
@@ -134,8 +149,11 @@ pub async fn gateway_list_usage(state: State<'_, AppState>) -> Result<Vec<UsageR
 
 /// 清空用量记录
 #[tauri::command]
-pub async fn gateway_clear_usage(state: State<'_, AppState>) -> Result<(), String> {
-    state.gateway_usage.clear();
+pub async fn gateway_clear_usage(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.gateway_usage.clear()?;
+    if let Err(e) = app.emit(GATEWAY_USAGE_CHANGED_EVENT, UsageChange::Cleared) {
+        eprintln!("[GatewayUsage] 推送清空事件失败: {}", e);
+    }
     Ok(())
 }
 

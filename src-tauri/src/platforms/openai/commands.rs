@@ -7,6 +7,18 @@ use crate::AppState;
 use crate::platforms::openai::models::{Account, OpenAIAuthUrlResult, OpenAITokenInfo, TokenData};
 use crate::platforms::openai::modules::{account as account_module, oauth, oauth_server, storage};
 
+async fn save_account_coordinated(
+    app: &AppHandle,
+    account: Account,
+    source: &str,
+) -> Result<Account, String> {
+    app.state::<AppState>()
+        .openai_token_coordinator
+        .save_account(account, source)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn openai_generate_auth_url(
     state: State<'_, AppState>,
@@ -69,10 +81,6 @@ pub async fn openai_exchange_code(
     // 加载现有账号用于去重检查
     let existing_accounts = storage::list_accounts(&app).await.unwrap_or_default();
 
-    println!("=== OpenAI Exchange Code ===");
-    println!("Email: {}", email);
-    println!("ChatGPT Account ID: {:?}", chatgpt_account_id);
-
     // 检查账号是否已存在（邮箱和 account_id 都相同）
     if Account::is_duplicate(&email, &chatgpt_account_id, &existing_accounts) {
         return Err("该账号已存在".to_string());
@@ -81,7 +89,6 @@ pub async fn openai_exchange_code(
     // 生成唯一的邮箱（相同邮箱不同 account_id 时添加序号）
     let unique_email =
         Account::generate_unique_email(&email, &chatgpt_account_id, &existing_accounts);
-    println!("Unique Email: {}", unique_email);
 
     // 构造 TokenData
     let now = chrono::Utc::now().timestamp();
@@ -104,15 +111,14 @@ pub async fn openai_exchange_code(
     );
     account.openai_auth_json = openai_auth_json;
 
-    // 保存账号到本地
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "oauth-exchange").await
 }
 
 #[tauri::command]
 pub async fn openai_refresh_token(refresh_token: String) -> Result<OpenAITokenInfo, String> {
-    let token = oauth::refresh_token(&refresh_token).await?;
+    let token = oauth::refresh_token(&refresh_token)
+        .await
+        .map_err(|error| error.to_string())?;
     let user_info = token.id_token.as_deref().and_then(oauth::parse_id_token);
     let mut info = oauth::build_token_info(token, user_info)?;
     info.refresh_token = info.refresh_token.or(Some(refresh_token));
@@ -134,13 +140,18 @@ pub async fn openai_load_account(app: AppHandle, account_id: String) -> Result<A
 /// 保存 OpenAI 账号
 #[tauri::command]
 pub async fn openai_save_account(app: AppHandle, account: Account) -> Result<(), String> {
-    storage::save_account(&app, &account).await
+    save_account_coordinated(&app, account, "account-save").await?;
+    Ok(())
 }
 
 /// 删除 OpenAI 账号
 #[tauri::command]
 pub async fn openai_delete_account(app: AppHandle, account_id: String) -> Result<bool, String> {
-    storage::delete_account(&app, &account_id).await
+    app.state::<AppState>()
+        .openai_token_coordinator
+        .delete_account(&account_id, "account-delete")
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// 获取当前 OpenAI 账号 ID
@@ -161,36 +172,7 @@ pub async fn openai_set_current_account_id(
 /// 刷新账号配额，返回更新后的完整账户数据
 #[tauri::command]
 pub async fn openai_fetch_quota(app: AppHandle, account_id: String) -> Result<Account, String> {
-    println!("=== openai_fetch_quota ===");
-    println!("account_id: {}", account_id);
-
-    let mut acc = storage::load_account(&app, &account_id).await?;
-    println!("Loaded account: {}", acc.email);
-
-    // API 账号不支持配额查询
-    if acc.account_type == crate::platforms::openai::models::account::AccountType::API {
-        return Err("API accounts do not support quota fetching".to_string());
-    }
-
-    // 使用 refresh_quota_and_backfill 统一刷新配额和订阅信息，
-    // 当本地存储的到期日过期时，会自动通过 accounts/check API 更新。
-    match account_module::refresh_quota_and_backfill(&mut acc).await {
-        Ok(_) => {
-            println!("Fetched quota and refreshed account info");
-        }
-        Err(e) => {
-            println!("Quota fetch failed: {}", e);
-            // 保存状态变更（rt_invalid、token 更新等）后返回错误
-            let _ = storage::save_account(&app, &acc).await;
-            return Err(e);
-        }
-    }
-
-    storage::save_account(&app, &acc).await?;
-    println!("Updated account quota");
-
-    let updated_acc = storage::load_account(&app, &account_id).await?;
-    Ok(updated_acc)
+    account_module::refresh_quota_and_backfill(&app, &account_id).await
 }
 
 /// 消费一张限流重置券并刷新配额，返回更新后的完整账户数据
@@ -199,26 +181,7 @@ pub async fn openai_consume_reset_credit(
     app: AppHandle,
     account_id: String,
 ) -> Result<Account, String> {
-    let mut acc = storage::load_account(&app, &account_id).await?;
-
-    if acc.account_type == crate::platforms::openai::models::account::AccountType::API {
-        return Err("API accounts do not support reset credits".to_string());
-    }
-
-    match account_module::consume_reset_credit(&mut acc).await {
-        Ok(_) => {}
-        Err(e) => {
-            // 保存状态变更（token 更新、rt_invalid 等）后返回错误
-            let _ = storage::save_account(&app, &acc).await;
-            return Err(e);
-        }
-    }
-
-    account_module::backfill_openai_auth_json_if_missing(&mut acc);
-    storage::save_account(&app, &acc).await?;
-
-    let updated_acc = storage::load_account(&app, &account_id).await?;
-    Ok(updated_acc)
+    account_module::consume_reset_credit(&app, &account_id).await
 }
 
 #[derive(serde::Serialize)]
@@ -237,23 +200,15 @@ pub async fn openai_refresh_all_quotas(app: AppHandle) -> Result<RefreshStats, S
     let mut failed = 0;
     let mut details = Vec::new();
 
-    for mut account in accounts {
+    for account in accounts {
         if account.rt_invalid {
             continue;
         }
-        match account_module::refresh_quota_and_backfill(&mut account).await {
-            Ok(_) => {
-                if let Err(e) = storage::save_account(&app, &account).await {
-                    failed += 1;
-                    details.push(format!("Account {}: Failed to save: {}", account.email, e));
-                } else {
-                    success += 1;
-                }
-            }
+        match account_module::refresh_quota_and_backfill(&app, &account.id).await {
+            Ok(_) => success += 1,
             Err(e) => {
                 failed += 1;
                 details.push(format!("Account {}: {}", account.email, e));
-                let _ = storage::save_account(&app, &account).await;
             }
         }
     }
@@ -288,7 +243,7 @@ pub async fn openai_refresh_account_token(
     refresh_window_secs: Option<i64>,
     force: Option<bool>,
 ) -> Result<TokenRefreshResult, String> {
-    let mut account = storage::load_account(&app, &account_id).await?;
+    let account = storage::load_account(&app, &account_id).await?;
 
     // API 账号不支持 token 刷新
     if account.account_type == crate::platforms::openai::models::account::AccountType::API {
@@ -300,15 +255,19 @@ pub async fn openai_refresh_account_token(
 
     let window_secs = refresh_window_secs.unwrap_or(300);
     let force = force.unwrap_or(false);
-
-    let refreshed =
-        account_module::refresh_token_if_needed(&mut account, window_secs, force).await?;
-    if refreshed {
-        account_module::backfill_openai_auth_json_if_missing(&mut account);
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    let resolved = if force {
+        coordinator.force_refresh(&account_id).await
+    } else {
+        coordinator.ensure_fresh(&account_id, window_secs).await
     }
+    .map_err(|error| error.to_string())?;
+    let refreshed = resolved.refreshed;
+    let mut account = resolved.account;
 
     // 无论 token 是否刷新，都要检查订阅信息是否过期。
     // JWT 中的到期日可能是上个账单周期的快照，需要实际调用 API 获取真实数据。
+    let original_openai_auth_json = account.openai_auth_json.clone();
     if account_module::missing_subscription_expiry(&account) {
         if let Some(access_token) = account
             .token
@@ -325,15 +284,16 @@ pub async fn openai_refresh_account_token(
         }
     }
 
-    if refreshed {
-        storage::save_account(&app, &account).await?;
+    if account.openai_auth_json != original_openai_auth_json {
+        let openai_auth_json = account.openai_auth_json.clone();
+        account = coordinator
+            .update_account(&account_id, "manual-token-refresh", move |latest| {
+                latest.openai_auth_json = openai_auth_json;
+            })
+            .await
+            .map_err(|error| error.to_string())?;
     }
-
-    let updated = storage::load_account(&app, &account_id).await?;
-    Ok(TokenRefreshResult {
-        account: updated,
-        refreshed,
-    })
+    Ok(TokenRefreshResult { account, refreshed })
 }
 
 #[tauri::command]
@@ -356,23 +316,19 @@ pub async fn openai_refresh_all_tokens(
     let mut failed = 0;
     let mut details = Vec::new();
 
-    for mut account in accounts {
-        match account_module::refresh_token_if_needed(&mut account, window_secs, force).await {
-            Ok(true) => {
-                if let Err(e) = storage::save_account(&app, &account).await {
-                    failed += 1;
-                    details.push(format!("Account {}: Failed to save: {}", account.email, e));
-                } else {
-                    refreshed += 1;
-                }
-            }
-            Ok(false) => {
-                skipped += 1;
-            }
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    for account in accounts {
+        let result = if force {
+            coordinator.force_refresh(&account.id).await
+        } else {
+            coordinator.ensure_fresh(&account.id, window_secs).await
+        };
+        match result {
+            Ok(result) if result.refreshed => refreshed += 1,
+            Ok(_) => skipped += 1,
             Err(e) => {
                 failed += 1;
                 details.push(format!("Account {}: {}", account.email, e));
-                let _ = storage::save_account(&app, &account).await;
             }
         }
     }
@@ -414,30 +370,9 @@ pub async fn openai_load_accounts_json(app: AppHandle) -> Result<String, String>
 #[tauri::command]
 pub async fn openai_add_account(app: AppHandle, refresh_token: String) -> Result<Account, String> {
     // 1. 使用 refresh_token 获取 access_token
-    let token_res = oauth::refresh_token(&refresh_token).await?;
-
-    println!("=== OpenAI Add Account id_token Debug ===");
-    if let Some(id_token) = token_res.id_token.as_deref() {
-        if let Some(payload) = id_token.split('.').nth(1) {
-            match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.as_bytes()) {
-                Ok(decoded) => match serde_json::from_slice::<serde_json::Value>(&decoded) {
-                    Ok(claims) => match serde_json::to_string_pretty(&claims) {
-                        Ok(pretty) => println!("Decoded id_token claims:\n{}", pretty),
-                        Err(err) => {
-                            println!("Failed to pretty-print id_token claims: {}", err);
-                            println!("Decoded id_token claims (compact): {}", claims);
-                        }
-                    },
-                    Err(err) => println!("Failed to parse id_token claims JSON: {}", err),
-                },
-                Err(err) => println!("Failed to decode id_token payload: {}", err),
-            }
-        } else {
-            println!("Invalid id_token format: missing payload segment");
-        }
-    } else {
-        println!("Refresh token response does not contain id_token");
-    }
+    let token_res = oauth::refresh_token(&refresh_token)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let user_info = token_res
         .id_token
@@ -447,7 +382,6 @@ pub async fn openai_add_account(app: AppHandle, refresh_token: String) -> Result
         .id_token
         .as_deref()
         .and_then(oauth::extract_openai_auth_json);
-    println!("Parsed OpenAIUserInfo: {:?}", user_info);
 
     // 获取 chatgpt_account_id
     let chatgpt_account_id = user_info
@@ -463,10 +397,6 @@ pub async fn openai_add_account(app: AppHandle, refresh_token: String) -> Result
     // 加载现有账号用于去重检查
     let existing_accounts = storage::list_accounts(&app).await.unwrap_or_default();
 
-    println!("=== OpenAI Add Account ===");
-    println!("Email: {}", email);
-    println!("ChatGPT Account ID: {:?}", chatgpt_account_id);
-
     // 检查账号是否已存在（邮箱和 account_id 都相同）
     if Account::is_duplicate(&email, &chatgpt_account_id, &existing_accounts) {
         return Err("该账号已存在".to_string());
@@ -475,7 +405,6 @@ pub async fn openai_add_account(app: AppHandle, refresh_token: String) -> Result
     // 生成唯一的邮箱（相同邮箱不同 account_id 时添加序号）
     let unique_email =
         Account::generate_unique_email(&email, &chatgpt_account_id, &existing_accounts);
-    println!("Unique Email: {}", unique_email);
 
     // 2. 构造 TokenData（优先使用接口返回的新 refresh_token，未返回则保留用户提供的）
     let now = chrono::Utc::now().timestamp();
@@ -502,9 +431,7 @@ pub async fn openai_add_account(app: AppHandle, refresh_token: String) -> Result
     account.openai_auth_json = openai_auth_json;
 
     // 4. 保存账号
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "refresh-token-import").await
 }
 
 /// 添加账号（仅使用 access_token，账号信息从原始 AT 或 session JSON 本地解析）
@@ -525,10 +452,6 @@ pub async fn openai_add_account_with_access_token(
         .ok_or_else(|| "Failed to get account identity from access token".to_string())?;
 
     let existing_accounts = storage::list_accounts(&app).await.unwrap_or_default();
-
-    println!("=== OpenAI Add Account With Access Token ===");
-    println!("Email: {}", email);
-    println!("ChatGPT Account ID: {:?}", chatgpt_account_id);
 
     if Account::is_duplicate(&email, &chatgpt_account_id, &existing_accounts) {
         return Err("该账号已存在".to_string());
@@ -559,9 +482,7 @@ pub async fn openai_add_account_with_access_token(
     );
     account.openai_auth_json = import.openai_auth_json;
 
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "codex-auth-import").await
 }
 
 /// 从 JWT 的 payload 中解析 exp 字段
@@ -627,9 +548,7 @@ pub async fn openai_import_account_direct(
     );
     account.openai_auth_json = openai_auth_json;
 
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "token-import").await
 }
 
 /// 添加 API 类型账号
@@ -680,9 +599,7 @@ pub async fn openai_add_api_account(
     let account = Account::new_api(id, email, api_config);
 
     // 保存账号
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "api-account-add").await
 }
 
 /// 更新 API 类型账号
@@ -740,9 +657,7 @@ pub async fn openai_update_api_account(
     account.updated_at = chrono::Utc::now().timestamp();
 
     // 保存账号
-    storage::save_account(&app, &account).await?;
-
-    Ok(account)
+    save_account_coordinated(&app, account, "api-account-update").await
 }
 
 /// 保存多个账号
@@ -753,13 +668,20 @@ pub async fn openai_save_accounts(app: AppHandle, accounts: Vec<Account>) -> Res
     let incoming_ids: std::collections::HashSet<String> =
         accounts.iter().map(|a| a.id.clone()).collect();
 
-    for account in &accounts {
-        storage::save_account(&app, account).await?;
+    let coordinator = app.state::<AppState>().openai_token_coordinator.clone();
+    for account in accounts {
+        coordinator
+            .save_account(account, "accounts-save")
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     for existing in existing_accounts {
         if !incoming_ids.contains(&existing.id) {
-            let _ = storage::delete_account(&app, &existing.id).await?;
+            coordinator
+                .delete_account(&existing.id, "accounts-save")
+                .await
+                .map_err(|error| error.to_string())?;
         }
     }
 
@@ -769,20 +691,15 @@ pub async fn openai_save_accounts(app: AppHandle, accounts: Vec<Account>) -> Res
 /// 更新账号
 #[tauri::command]
 pub async fn openai_update_account(app: AppHandle, account: Account) -> Result<(), String> {
-    storage::save_account(&app, &account).await
+    save_account_coordinated(&app, account, "account-update").await?;
+    Ok(())
 }
 
 /// 启动 OAuth 授权流程（使用本地服务器自动处理回调）
 #[tauri::command]
 pub async fn openai_start_oauth_login(app: AppHandle) -> Result<Account, String> {
-    println!("开始 OpenAI OAuth 授权流程...");
-
     // 启动 OAuth 流程获取账号
     let mut account = oauth_server::start_oauth_flow(app.clone()).await?;
-
-    println!("=== OpenAI OAuth Login ===");
-    println!("Email: {}", account.email);
-    println!("ChatGPT Account ID: {:?}", account.chatgpt_account_id);
 
     // 加载现有账号用于去重检查
     let existing_accounts = storage::list_accounts(&app).await.unwrap_or_default();
@@ -805,14 +722,11 @@ pub async fn openai_start_oauth_login(app: AppHandle) -> Result<Account, String>
 
     // 如果邮箱需要修改（添加了序号），则更新
     if unique_email != account.email {
-        println!("邮箱去重: {} -> {}", account.email, unique_email);
         account.email = unique_email;
     }
 
     // 保存账号到本地
-    storage::save_account(&app, &account).await?;
-
-    println!("OpenAI OAuth 授权完成，账号已保存: {}", account.email);
+    let account = save_account_coordinated(&app, account, "oauth-login").await?;
 
     Ok(account)
 }
@@ -963,11 +877,6 @@ pub async fn codex_switch_account(
         &base_url,
         &api_key,
     )?;
-    println!(
-        "Codex profile switched directly: provider={}, model={}",
-        model_provider.trim(),
-        model.trim()
-    );
     Ok(())
 }
 
@@ -1072,11 +981,6 @@ pub async fn openai_switch_account(app: AppHandle, account_id: String) -> Result
     // 更新 current_account_id
     storage::set_current_account_id(&app, Some(account_id.clone())).await?;
 
-    println!(
-        "OpenAI account switched: {} (type: {:?})",
-        account.email, account.account_type
-    );
-
     Ok(())
 }
 
@@ -1170,8 +1074,6 @@ pub async fn droid_switch_account(
         .map_err(|e| format!("Failed to serialize settings.json: {}", e))?;
     std::fs::write(&settings_file, content)
         .map_err(|e| format!("Failed to write settings.json: {}", e))?;
-
-    println!("Droid account switched: model={}, id={}", model, custom_id);
 
     Ok(())
 }

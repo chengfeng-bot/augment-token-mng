@@ -4,6 +4,7 @@
 //! 依优先级 failover，串联 入站→canonical→渠道出站→响应/流式回转 的完整链路，并旁路
 //! 采集用量（token / TTFT / 时延，不计价）。Responses↔Codex 同线型直转在此短路透传。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,6 +12,7 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use hyper::{Body, Response};
 use serde_json::{Value, json};
+use tauri::Emitter;
 use warp::http::{HeaderMap, StatusCode};
 use warp::{Filter, Rejection, Reply};
 
@@ -20,9 +22,11 @@ use super::config::{ChannelKind, GatewayChannel};
 use super::executor::GatewayExecutor;
 use super::translate::stream_bridge::{SseDecoder, StreamBridge, inbound_for, outbound_for};
 use super::translate::{ParseState, Wire};
-use super::usage::UsageRecord;
+use super::usage::{GATEWAY_USAGE_CHANGED_EVENT, UsageChange, UsageRecord};
 use crate::AppState;
+use crate::platforms::openai::codex::models::CodexPoolAccount;
 use crate::platforms::openai::codex::upstream::should_retry_status;
+use crate::platforms::openai::modules::storage as account_storage;
 
 mod accumulate;
 use accumulate::StreamAcc;
@@ -184,7 +188,7 @@ async fn handle(
         .unwrap_or(false);
 
     // 门控 + 鉴权 + 候选收集（快照后立即释放锁，避免跨 await 持锁）
-    let mut candidates = {
+    let candidates = {
         let cfg = state
             .gateway_config
             .lock()
@@ -198,6 +202,13 @@ async fn handle(
     if candidates.is_empty() {
         return Err(reject(GatewayRejection::NoChannel(format!(
             "无可用渠道支持模型 {}",
+            model
+        ))));
+    }
+    let mut candidates = filter_unavailable_codex_channels(state.as_ref(), candidates).await;
+    if candidates.is_empty() {
+        return Err(reject(GatewayRejection::NoChannel(format!(
+            "模型 {} 的 Codex OAuth 渠道配额均已耗尽",
             model
         ))));
     }
@@ -340,7 +351,7 @@ async fn handle(
     if let Some((status, bytes, mut rec)) = last_upstream {
         rec.duration_ms = started.elapsed().as_millis();
         rec.error = extract_error_message(&bytes);
-        state.gateway_usage.record(rec);
+        record_usage(&state, rec);
         return buffered_response(status, "application/json", bytes.to_vec())
             .map_err(|e| reject(GatewayRejection::Internal(e)));
     }
@@ -350,6 +361,35 @@ async fn handle(
     } else {
         last_err
     })))
+}
+
+async fn filter_unavailable_codex_channels(
+    state: &AppState,
+    candidates: Vec<GatewayChannel>,
+) -> Vec<GatewayChannel> {
+    let Ok(accounts) = account_storage::list_accounts(&state.app_handle).await else {
+        return candidates;
+    };
+    let accounts: HashMap<_, _> = accounts
+        .into_iter()
+        .map(|account| (account.id.clone(), account))
+        .collect();
+
+    candidates
+        .into_iter()
+        .filter(|channel| {
+            if channel.kind != ChannelKind::CodexOauth {
+                return true;
+            }
+            channel
+                .account_id
+                .as_deref()
+                .and_then(|account_id| accounts.get(account_id))
+                .and_then(CodexPoolAccount::from_openai_account)
+                .map(|account| account.is_available())
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 /// 上游响应是否为 SSE 事件流
@@ -383,6 +423,20 @@ fn new_record(model: &str, channel: &GatewayChannel, inbound: &str, stream: bool
         cache_write_tokens: 0,
         reasoning_tokens: 0,
         error: None,
+    }
+}
+
+/// 持久化用量后推送增量事件；写入失败时不向前端发送不存在的记录
+fn record_usage(state: &AppState, rec: UsageRecord) {
+    if let Err(e) = state.gateway_usage.record(&rec) {
+        eprintln!("[GatewayUsage] 写入记录失败: {}", e);
+        return;
+    }
+    if let Err(e) = state.app_handle.emit(
+        GATEWAY_USAGE_CHANGED_EVENT,
+        UsageChange::Recorded { record: rec },
+    ) {
+        eprintln!("[GatewayUsage] 推送记录事件失败: {}", e);
     }
 }
 
@@ -423,7 +477,7 @@ async fn error_reply(
     rec.status_code = status.as_u16();
     rec.duration_ms = started.elapsed().as_millis();
     rec.error = extract_error_message(&bytes);
-    state.gateway_usage.record(rec);
+    record_usage(&state, rec);
     buffered_response(status, "application/json", bytes.to_vec())
 }
 
@@ -452,7 +506,7 @@ async fn buffered_reply(
                 rec.status_code = StatusCode::BAD_GATEWAY.as_u16();
                 rec.duration_ms = started.elapsed().as_millis();
                 rec.error = Some(format!("上游响应无法按目标协议解析: {}", e));
-                state.gateway_usage.record(rec);
+                record_usage(&state, rec);
                 let body_value = json!({
                     "error": {
                         "message": format!("上游响应无法按目标协议解析: {}", e),
@@ -470,7 +524,7 @@ async fn buffered_reply(
             rec.status_code = StatusCode::BAD_GATEWAY.as_u16();
             rec.duration_ms = started.elapsed().as_millis();
             rec.error = Some(format!("上游返回非 JSON 响应: {}", e));
-            state.gateway_usage.record(rec);
+            record_usage(&state, rec);
             let body_value = json!({
                 "error": {
                     "message": format!("上游返回非 JSON 响应: {}", e),
@@ -498,7 +552,7 @@ async fn buffered_reply(
     rec.stream = false;
     rec.duration_ms = started.elapsed().as_millis();
     let rec = rec.with_usage(&usage);
-    state.gateway_usage.record(rec);
+    record_usage(&state, rec);
     buffered_response(status, "application/json", body_bytes)
 }
 
@@ -575,7 +629,7 @@ async fn destream_reply(
         StatusCode::OK
     };
     let rec = rec.with_usage(&usage);
-    state.gateway_usage.record(rec);
+    record_usage(&state, rec);
 
     let body_bytes = serde_json::to_vec(&body_value).unwrap_or_default();
     buffered_response(response_status, "application/json", body_bytes)
@@ -693,7 +747,7 @@ fn build_streaming_reply(
             rec.status = "error".to_string();
         }
         let rec = rec.with_usage(&usage);
-        state.gateway_usage.record(rec);
+        record_usage(&state, rec);
     });
 
     builder

@@ -41,7 +41,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { listen } from '@tauri-apps/api/event'
 import { useGatewayStore } from '../../stores/gateway'
 import GatewayOverview from '../gateway/GatewayOverview.vue'
 import GatewayChannels from '../gateway/GatewayChannels.vue'
@@ -54,6 +55,10 @@ const store = useGatewayStore()
 const activeTab = ref('overview')
 const showClientDialog = ref(false)
 const clientType = ref('codex')
+let unlistenUsageChanged = null
+let unlistenStatusChanged = null
+let unlistenOpenAIAccountsUpdated = null
+let codexAccountsReloadTimer = null
 
 const openClient = (type) => {
   clientType.value = type
@@ -75,9 +80,47 @@ const tabComponents = {
 }
 const activeComponent = computed(() => tabComponents[activeTab.value])
 
+const scheduleCodexAccountsReload = () => {
+  if (codexAccountsReloadTimer) clearTimeout(codexAccountsReloadTimer)
+  codexAccountsReloadTimer = setTimeout(async () => {
+    codexAccountsReloadTimer = null
+    await store.loadCodexAccounts()
+  }, 800)
+}
+
 onMounted(async () => {
+  try {
+    unlistenUsageChanged = await listen('gateway-usage-changed', (event) => {
+      store.queueUsageChange(event.payload)
+    })
+    unlistenStatusChanged = await listen('gateway-status-changed', (event) => {
+      store.setGatewayRunning(event.payload)
+    })
+    unlistenOpenAIAccountsUpdated = await listen('openai-accounts-updated', () => {
+      scheduleCodexAccountsReload()
+    })
+  } catch (error) {
+    console.warn('Failed to register gateway event listeners:', error)
+  }
+
   await store.loadConfig()
-  await Promise.all([store.loadStatus(), store.loadBindableAccounts(), store.loadModels()])
+  await Promise.all([
+    store.loadStatus(),
+    store.loadBindableAccounts(),
+    store.loadModels(),
+    store.loadUsage(),
+    store.loadCodexAccounts()
+  ])
+})
+
+onUnmounted(() => {
+  unlistenUsageChanged?.()
+  unlistenStatusChanged?.()
+  unlistenOpenAIAccountsUpdated?.()
+  if (codexAccountsReloadTimer) {
+    clearTimeout(codexAccountsReloadTimer)
+    codexAccountsReloadTimer = null
+  }
 })
 </script>
 

@@ -1,9 +1,81 @@
 use chrono::Utc;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuotaStatus {
+    #[default]
+    Unknown,
+    Available,
+    Warning,
+    Exhausted,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QuotaRefreshState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_check_at: Option<i64>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after: Option<i64>,
+}
+
+impl QuotaRefreshState {
+    pub fn is_due(&self, now: i64) -> bool {
+        self.next_check_at.map(|next| next <= now).unwrap_or(true)
+    }
+
+    pub fn is_stale(&self, now: i64) -> bool {
+        self.last_success_at.is_none()
+            || self
+                .stale_after
+                .map(|stale_after| stale_after <= now)
+                .unwrap_or(true)
+    }
+
+    pub fn record_success(&mut self, now: i64, base_interval_secs: u64) {
+        let base = base_interval_secs.max(60) as i64;
+        self.last_attempt_at = Some(now);
+        self.last_success_at = Some(now);
+        self.next_check_at = Some(now.saturating_add(base));
+        self.consecutive_failures = 0;
+        self.last_error = None;
+        self.stale_after = Some(now.saturating_add(base.saturating_mul(2)));
+    }
+
+    pub fn record_failure(&mut self, now: i64, base_interval_secs: u64, error: String) {
+        let base = base_interval_secs.max(60);
+        self.last_attempt_at = Some(now);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_error = Some(error);
+        let shift = self.consecutive_failures.saturating_sub(1).min(3);
+        let multiplier = 1_u64 << shift;
+        let jitter_max = (base / 10).max(1);
+        let jitter = rand::thread_rng().gen_range(0..=jitter_max);
+        let delay = base.saturating_mul(multiplier).saturating_add(jitter);
+        self.next_check_at = Some(now.saturating_add(delay.min(i64::MAX as u64) as i64));
+    }
+}
 
 /// Quota fields consumed by the current frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaData {
+    #[serde(default)]
+    pub status: QuotaStatus,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_reached: Option<bool>,
+
     #[serde(
         rename = "codex_5h_used_percent",
         skip_serializing_if = "Option::is_none"
@@ -102,6 +174,10 @@ pub struct WhamUsageResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WhamRateLimit {
     #[serde(default)]
+    pub allowed: Option<bool>,
+    #[serde(default)]
+    pub limit_reached: Option<bool>,
+    #[serde(default)]
     pub primary_window: Option<WhamRateLimitWindow>,
     #[serde(default)]
     pub secondary_window: Option<WhamRateLimitWindow>,
@@ -122,6 +198,9 @@ pub struct WhamRateLimitWindow {
 impl QuotaData {
     pub fn new() -> Self {
         Self {
+            status: QuotaStatus::Unknown,
+            allowed: None,
+            limit_reached: None,
             codex_5h_used_percent: None,
             codex_5h_reset_after_seconds: None,
             codex_5h_window_minutes: None,
@@ -141,12 +220,28 @@ impl QuotaData {
         let now = Utc::now().timestamp();
 
         if let Some(rate_limit) = &usage.rate_limit {
+            quota.allowed = rate_limit.allowed;
+            quota.limit_reached = rate_limit.limit_reached;
+            quota.status = if rate_limit.limit_reached == Some(true)
+                || rate_limit.allowed == Some(false)
+            {
+                QuotaStatus::Exhausted
+            } else if rate_limit.allowed == Some(true) || rate_limit.limit_reached == Some(false) {
+                QuotaStatus::Available
+            } else {
+                QuotaStatus::Unknown
+            };
             if let Some(primary) = &rate_limit.primary_window {
                 quota.codex_5h_used_percent = primary.used_percent.map(clamp_percent);
                 quota.codex_5h_window_minutes =
                     window_minutes_from_seconds(primary.limit_window_seconds);
                 quota.codex_5h_reset_after_seconds =
                     reset_after_seconds(now, primary.reset_after_seconds, primary.reset_at);
+                if quota.status != QuotaStatus::Exhausted
+                    && quota.codex_5h_used_percent.unwrap_or_default() >= 80.0
+                {
+                    quota.status = QuotaStatus::Warning;
+                }
             }
 
             if let Some(secondary) = &rate_limit.secondary_window {
@@ -162,7 +257,17 @@ impl QuotaData {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.codex_5h_used_percent.is_some() || self.codex_7d_used_percent.is_some()
+        self.status != QuotaStatus::Unknown
+            || self.allowed.is_some()
+            || self.limit_reached.is_some()
+            || self.codex_5h_used_percent.is_some()
+            || self.codex_7d_used_percent.is_some()
+            || self.reset_credits_available.is_some()
+            || self.reset_credits_total.is_some()
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.status == QuotaStatus::Exhausted
     }
 }
 

@@ -4,8 +4,9 @@
 use std::fs;
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 use tokio::sync::Mutex as TokioMutex;
 
 use super::logger::RequestLogger;
@@ -36,6 +37,7 @@ const CODEX_CONFIG_FILE: &str = "openai_codex_config.json";
 const SHARED_API_SERVER_PORT: u16 = 8766;
 const MIN_QUOTA_REFRESH_INTERVAL_SECONDS: u64 = 60;
 const MAX_QUOTA_REFRESH_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+const MAX_QUOTA_REFRESH_SCAN_INTERVAL_SECONDS: u64 = 5 * 60;
 
 fn normalize_access_fields(config: &mut CodexServerConfig) {
     config.api_key = config.api_key.as_ref().and_then(|v| {
@@ -194,9 +196,9 @@ fn current_api_server_port(state: &AppState) -> u16 {
         .unwrap_or(SHARED_API_SERVER_PORT)
 }
 
-async fn apply_periodic_tasks(app: tauri::AppHandle, state: &AppState, config: &CodexServerConfig) {
-    if config.enabled && config.quota_refresh_enabled {
-        start_periodic_quota_refresh(app, state, config.quota_refresh_interval_seconds).await;
+async fn apply_periodic_tasks(app: tauri::AppHandle, config: &CodexServerConfig) {
+    if config.quota_refresh_enabled {
+        start_periodic_quota_refresh(app, config.quota_refresh_interval_seconds).await;
     } else {
         stop_periodic_quota_refresh().await;
     }
@@ -227,8 +229,12 @@ async fn init_codex_runtime(
         pool.set_selected_account_id(account_id.clone()).await;
     }
 
-    let executor =
-        Arc::new(crate::platforms::openai::codex::executor::CodexExecutor::new(pool.clone())?);
+    let executor = Arc::new(
+        crate::platforms::openai::codex::executor::CodexExecutor::new(
+            pool.clone(),
+            state.openai_token_coordinator.clone(),
+        )?,
+    );
     *state.codex_executor.lock().unwrap() = Some(executor);
 
     // 初始化 logger
@@ -256,7 +262,7 @@ pub async fn init_codex_enabled_state_on_startup(
         *state.codex_server.lock().unwrap() = None;
     }
 
-    apply_periodic_tasks(app.clone(), state, &config).await;
+    apply_periodic_tasks(app.clone(), &config).await;
 
     *state.codex_server_config.lock().unwrap() = Some(config.clone());
     write_persisted_config(app, &config)?;
@@ -345,7 +351,7 @@ pub async fn start_codex_server(
     *state.codex_server.lock().unwrap() = Some(CodexServer::new(config.port));
     *state.codex_server_config.lock().unwrap() = Some(config.clone());
     write_persisted_config(&app, &config)?;
-    apply_periodic_tasks(app.clone(), state.inner(), &config).await;
+    apply_periodic_tasks(app.clone(), &config).await;
     Ok(())
 }
 
@@ -365,8 +371,7 @@ pub async fn stop_codex_server(
         config.enabled = false;
         *state.codex_server_config.lock().unwrap() = Some(config.clone());
         write_persisted_config(&app, &config)?;
-        apply_periodic_tasks(app.clone(), state.inner(), &config).await;
-        println!("Codex routes disabled");
+        apply_periodic_tasks(app.clone(), &config).await;
         Ok(())
     } else {
         Err("Codex server is not running".to_string())
@@ -618,7 +623,7 @@ pub async fn set_codex_runtime_settings(
     normalize_runtime_fields(&mut config);
     *state.codex_server_config.lock().unwrap() = Some(config.clone());
     write_persisted_config(&app, &config)?;
-    apply_periodic_tasks(app.clone(), state.inner(), &config).await;
+    apply_periodic_tasks(app.clone(), &config).await;
     apply_fast_mode_to_codex_config_toml(&app, settings.fast_mode_enabled)?;
     Ok(runtime_settings_from_config(&config))
 }
@@ -779,123 +784,60 @@ pub async fn get_codex_all_time_stats(
 
 // ==================== 定时任务 ====================
 
-async fn start_periodic_quota_refresh(
-    app: tauri::AppHandle,
-    state: &AppState,
-    interval_seconds: u64,
-) {
+async fn start_periodic_quota_refresh(app: tauri::AppHandle, interval_seconds: u64) {
     stop_periodic_quota_refresh().await;
 
-    let pool = state.codex_pool.lock().unwrap().clone();
-    let Some(pool_ref) = pool else {
-        return;
-    };
-
-    let tick_seconds = interval_seconds.max(1);
+    let tick_seconds = interval_seconds.clamp(
+        MIN_QUOTA_REFRESH_INTERVAL_SECONDS,
+        MAX_QUOTA_REFRESH_SCAN_INTERVAL_SECONDS,
+    );
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_seconds));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
         loop {
             interval.tick().await;
-            println!("[Codex] Starting periodic quota refresh...");
 
             let accounts =
                 match crate::platforms::openai::modules::storage::list_accounts(&app).await {
                     Ok(accs) => accs,
-                    Err(e) => {
-                        eprintln!("[Codex] Failed to list accounts for quota refresh: {}", e);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
 
-            let mut refreshed = 0;
-            let mut changed_account_ids = std::collections::BTreeSet::new();
-            for mut account in accounts {
-                if account.account_type
-                    == crate::platforms::openai::models::account::AccountType::API
-                {
-                    continue;
-                }
-                if account
-                    .quota
-                    .as_ref()
-                    .map(|q| q.is_forbidden)
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                if account.rt_invalid {
-                    continue;
-                }
+            let now = chrono::Utc::now().timestamp();
+            let due_accounts = accounts
+                .into_iter()
+                .filter(|account| {
+                    account.account_type
+                        != crate::platforms::openai::models::account::AccountType::API
+                        && !account
+                            .quota
+                            .as_ref()
+                            .map(|quota| quota.is_forbidden)
+                            .unwrap_or(false)
+                        && !account.rt_invalid
+                        && account
+                            .token
+                            .as_ref()
+                            .map(|token| token.refresh_token.is_some() || token.expires_at > now)
+                            .unwrap_or(false)
+                        && account.quota_refresh.is_due(now)
+                })
+                .collect::<Vec<_>>();
 
-                match crate::platforms::openai::modules::account::refresh_quota_and_backfill(
-                    &mut account,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        if let Err(e) =
-                            crate::platforms::openai::modules::storage::save_account(&app, &account)
-                                .await
-                        {
-                            eprintln!("[Codex] Failed to save account {}: {}", account.email, e);
-                        } else {
-                            refreshed += 1;
-                            changed_account_ids.insert(account.id.clone());
-                        }
+            stream::iter(due_accounts.into_iter())
+                .for_each_concurrent(Some(4), |account| {
+                    let app = app.clone();
+                    async move {
+                        let _ =
+                            crate::platforms::openai::modules::account::refresh_quota_and_backfill(
+                                &app,
+                                &account.id,
+                            )
+                            .await;
                     }
-                    Err(e) => {
-                        eprintln!(
-                            "[Codex] Failed to refresh quota for {}: {}",
-                            account.email, e
-                        );
-                        // 与 openai_fetch_quota 一致：失败时仍保存（如 refresh_token_reused 已置 rt_invalid）
-                        match crate::platforms::openai::modules::storage::save_account(
-                            &app, &account,
-                        )
-                        .await
-                        {
-                            Ok(()) if account.rt_invalid => {
-                                changed_account_ids.insert(account.id.clone());
-                                if let Ok(accs) =
-                                    crate::platforms::openai::modules::storage::list_accounts(&app)
-                                        .await
-                                {
-                                    pool_ref.refresh_from_accounts(&accs).await;
-                                }
-                            }
-                            Err(save_e) => {
-                                eprintln!(
-                                    "[Codex] Failed to save account after refresh error {}: {}",
-                                    account.email, save_e
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            if let Ok(accounts) =
-                crate::platforms::openai::modules::storage::list_accounts(&app).await
-            {
-                pool_ref.refresh_from_accounts(&accounts).await;
-            }
-
-            println!(
-                "[Codex] Periodic quota refresh completed: {} accounts refreshed",
-                refreshed
-            );
-
-            let _ = app.emit(
-                "openai-accounts-updated",
-                serde_json::json!({
-                    "source": "codex-periodic-quota-refresh",
-                    "refreshed": refreshed,
-                    "account_ids": changed_account_ids.into_iter().collect::<Vec<_>>(),
-                    "timestamp": chrono::Utc::now().timestamp()
-                }),
-            );
+                })
+                .await;
         }
     });
 
@@ -906,6 +848,5 @@ async fn stop_periodic_quota_refresh() {
     let mut task = QUOTA_REFRESH_TASK.lock().await;
     if let Some(handle) = task.take() {
         handle.abort();
-        println!("[Codex] Periodic quota refresh task stopped");
     }
 }

@@ -13,6 +13,7 @@ const CONFIG_KEY = 'gateway-config'
 const CUSTOM_MODELS_KEY = 'gateway-custom-models'
 const DEFAULT_PORT = 8766
 const CUSTOM_GROUP_ID = '__custom__'
+const USAGE_EVENT_BATCH_MS = 200
 
 const genId = () => `ch_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 
@@ -57,6 +58,13 @@ export const useGatewayStore = defineStore('gateway', () => {
   const configLoaded = ref(false)
   const modelsLoaded = ref(false)
 
+  let pendingUsageChanges = []
+  let usageFlushTimer = null
+  let usageChangeSequence = 0
+  let latestUsageLoadId = 0
+  let activeUsageLoads = 0
+  const usageChangesDuringLoads = []
+
   const applyConfig = (data) => {
     if (!data) return
     config.value = {
@@ -72,6 +80,49 @@ export const useGatewayStore = defineStore('gateway', () => {
     apiKey: config.value.apiKey,
     channels: channels.value
   })
+
+  const applyUsageChanges = (records, changes) => {
+    let next = Array.isArray(records) ? [...records] : []
+    for (const change of changes) {
+      if (change?.type === 'recorded' && change.record?.requestId) {
+        const idx = next.findIndex((record) => record.requestId === change.record.requestId)
+        if (idx >= 0) next.splice(idx, 1)
+        next.push(change.record)
+      } else if (change?.type === 'cleared') {
+        next = []
+      } else if (change?.type === 'channelRemoved' && change.channelId) {
+        next = next.filter((record) => record.channelId !== change.channelId)
+      }
+    }
+    return next.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+  }
+
+  const flushUsageChanges = () => {
+    usageFlushTimer = null
+    if (!pendingUsageChanges.length) return
+    const changes = pendingUsageChanges
+    pendingUsageChanges = []
+    usage.value = applyUsageChanges(usage.value, changes)
+  }
+
+  // 高频请求按小批次合并，避免每条 Tauri 事件都触发整页派生统计重算
+  const queueUsageChange = (change) => {
+    if (!change || !['recorded', 'cleared', 'channelRemoved'].includes(change.type)) return
+    usageChangeSequence += 1
+    if (activeUsageLoads > 0) {
+      usageChangesDuringLoads.push({ sequence: usageChangeSequence, change })
+    }
+    pendingUsageChanges.push(change)
+    if (!usageFlushTimer) {
+      usageFlushTimer = setTimeout(flushUsageChanges, USAGE_EVENT_BATCH_MS)
+    }
+  }
+
+  const setGatewayRunning = (running) => {
+    const value = Boolean(running)
+    status.value = { ...status.value, running: value }
+    config.value = { ...config.value, enabled: value }
+  }
 
   // Actions
   const loadConfig = async (force = false) => {
@@ -114,6 +165,7 @@ export const useGatewayStore = defineStore('gateway', () => {
         address: s.address || '',
         port: s.port || config.value.port || DEFAULT_PORT
       }
+      config.value = { ...config.value, enabled: Boolean(s.running) }
     } catch (error) {
       console.warn('gateway_get_status unavailable:', error)
       status.value = { running: false, address: '', port: config.value.port || DEFAULT_PORT }
@@ -150,15 +202,26 @@ export const useGatewayStore = defineStore('gateway', () => {
   }
 
   const loadUsage = async () => {
+    const loadId = ++latestUsageLoadId
+    const startSequence = usageChangeSequence
+    activeUsageLoads += 1
     isLoadingUsage.value = true
     try {
       const list = await invoke('gateway_list_usage')
-      usage.value = Array.isArray(list) ? list : []
+      if (loadId === latestUsageLoadId) {
+        const changes = usageChangesDuringLoads
+          .filter((entry) => entry.sequence > startSequence)
+          .map((entry) => entry.change)
+        usage.value = applyUsageChanges(Array.isArray(list) ? list : [], changes)
+      }
     } catch (error) {
       console.warn('gateway_list_usage unavailable:', error)
-      usage.value = []
     } finally {
-      isLoadingUsage.value = false
+      activeUsageLoads -= 1
+      if (activeUsageLoads === 0) {
+        usageChangesDuringLoads.length = 0
+        isLoadingUsage.value = false
+      }
     }
     return usage.value
   }
@@ -166,10 +229,11 @@ export const useGatewayStore = defineStore('gateway', () => {
   const clearUsage = async () => {
     try {
       await invoke('gateway_clear_usage')
+      usage.value = []
     } catch (error) {
       console.warn('gateway_clear_usage unavailable:', error)
+      throw error
     }
-    usage.value = []
   }
 
   const loadBindableAccounts = async () => {
@@ -193,6 +257,19 @@ export const useGatewayStore = defineStore('gateway', () => {
       codexAccounts.value = []
     }
     return codexAccounts.value
+  }
+
+  // 单条更新 Codex 账号（刷新配额后写回，避免整表重载）
+  const upsertCodexAccount = (account) => {
+    if (!account?.id) return
+    const idx = codexAccounts.value.findIndex((a) => a.id === account.id)
+    if (idx >= 0) {
+      const next = [...codexAccounts.value]
+      next[idx] = account
+      codexAccounts.value = next
+    } else {
+      codexAccounts.value = [...codexAccounts.value, account]
+    }
   }
 
   // 合并同步目录与自定义模型为展示分组：自定义同 id 覆盖同步项，未匹配开发商归入「自定义」分组
@@ -342,8 +419,9 @@ export const useGatewayStore = defineStore('gateway', () => {
   return {
     status, config, channels, usage, bindableAccounts, codexAccounts, models, customModels, modelsSyncedAt,
     isLoadingConfig, isLoadingStatus, isTogglingServer, isLoadingUsage, isSyncingModels,
-    loadConfig, saveConfig, loadStatus, startServer, stopServer,
-    loadUsage, clearUsage, loadBindableAccounts, loadCodexAccounts,
+    loadConfig, saveConfig, loadStatus, startServer, stopServer, setGatewayRunning,
+    loadUsage, clearUsage, loadBindableAccounts, loadCodexAccounts, upsertCodexAccount,
+    queueUsageChange,
     loadModels, syncModels, allModelIds,
     loadCustomModels, upsertCustomModel, removeCustomModel,
     fetchChannelModels, testChannel,

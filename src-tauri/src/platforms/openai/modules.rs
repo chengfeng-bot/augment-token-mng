@@ -3,3 +3,4 @@ pub mod oauth;
 pub mod oauth_server;
 pub mod quota;
 pub mod storage;
+pub mod token_coordinator;

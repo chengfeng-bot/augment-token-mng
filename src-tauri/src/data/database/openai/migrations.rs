@@ -56,12 +56,26 @@ pub async fn create_tables(
             updated_at BIGINT NOT NULL,
             deleted BOOLEAN NOT NULL DEFAULT FALSE,
             version BIGINT NOT NULL DEFAULT nextval('openai_account_version_seq'),
-            is_forbidden BOOLEAN NOT NULL DEFAULT FALSE
+            is_forbidden BOOLEAN NOT NULL DEFAULT FALSE,
+            quota_status TEXT,
+            quota_allowed BOOLEAN,
+            quota_limit_reached BOOLEAN,
+            reset_credits_available BIGINT,
+            reset_credits_total BIGINT,
+            quota_last_attempt_at BIGINT,
+            quota_last_success_at BIGINT,
+            quota_next_check_at BIGINT,
+            quota_consecutive_failures BIGINT NOT NULL DEFAULT 0,
+            quota_last_error TEXT,
+            quota_stale_after BIGINT
         )
         "#,
             &[],
         )
         .await?;
+
+    // 新建表后同样补齐历史增量字段，保证首次初始化即可匹配当前 mapper。
+    add_new_fields_if_not_exist(client).await?;
 
     client
         .execute(
@@ -152,7 +166,6 @@ pub async fn add_new_fields_if_not_exist(
                         .await?;
                 }
             }
-            println!("Added column {} to openai_accounts", column);
         }
     }
 
@@ -184,7 +197,6 @@ pub async fn add_new_fields_if_not_exist(
                     &[],
                 )
                 .await?;
-            println!("Added column {} to openai_accounts", column);
         }
     }
 
@@ -209,7 +221,6 @@ pub async fn add_new_fields_if_not_exist(
                 &[],
             )
             .await?;
-        println!("Added column is_forbidden to openai_accounts");
     }
 
     // 添加 rt_invalid 字段
@@ -233,7 +244,6 @@ pub async fn add_new_fields_if_not_exist(
                 &[],
             )
             .await?;
-        println!("Added column rt_invalid to openai_accounts");
     }
 
     // 添加 rt_invalid_reason 字段
@@ -257,7 +267,6 @@ pub async fn add_new_fields_if_not_exist(
                 &[],
             )
             .await?;
-        println!("Added column rt_invalid_reason to openai_accounts");
     }
 
     let check_reverse_proxy_enabled = client
@@ -280,7 +289,6 @@ pub async fn add_new_fields_if_not_exist(
                 &[],
             )
             .await?;
-        println!("Added column reverse_proxy_enabled to openai_accounts");
     }
 
     // 添加 API 账号字段
@@ -311,7 +319,49 @@ pub async fn add_new_fields_if_not_exist(
                     &[],
                 )
                 .await?;
-            println!("Added column {} to openai_accounts", column);
+        }
+    }
+
+    // 添加配额状态、Reset Credits 与账号级调度字段
+    let coordinated_quota_columns = [
+        ("quota_status", "TEXT"),
+        ("quota_allowed", "BOOLEAN"),
+        ("quota_limit_reached", "BOOLEAN"),
+        ("reset_credits_available", "BIGINT"),
+        ("reset_credits_total", "BIGINT"),
+        ("quota_last_attempt_at", "BIGINT"),
+        ("quota_last_success_at", "BIGINT"),
+        ("quota_next_check_at", "BIGINT"),
+        ("quota_consecutive_failures", "BIGINT NOT NULL DEFAULT 0"),
+        ("quota_last_error", "TEXT"),
+        ("quota_stale_after", "BIGINT"),
+    ];
+    for (column, data_type) in coordinated_quota_columns {
+        let exists: bool = client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'openai_accounts'
+                        AND column_name = '{}'
+                    )",
+                    column
+                ),
+                &[],
+            )
+            .await?
+            .get(0);
+        if !exists {
+            client
+                .execute(
+                    &format!(
+                        "ALTER TABLE openai_accounts ADD COLUMN {} {}",
+                        column, data_type
+                    ),
+                    &[],
+                )
+                .await?;
         }
     }
 
