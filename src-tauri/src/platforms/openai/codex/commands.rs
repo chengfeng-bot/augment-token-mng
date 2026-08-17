@@ -16,6 +16,9 @@ use super::models::{
 };
 use super::pool::{CodexServerConfig, CodexServerStatus};
 use crate::AppState;
+use crate::platforms::openai::commands::{
+    has_one_million_context_fields, set_one_million_context_fields,
+};
 use crate::platforms::openai::codex::server::CodexServer;
 static QUOTA_REFRESH_TASK: std::sync::LazyLock<TokioMutex<Option<tokio::task::JoinHandle<()>>>> =
     std::sync::LazyLock::new(|| TokioMutex::new(None));
@@ -31,6 +34,8 @@ pub struct CodexRuntimeSettings {
     pub quota_refresh_enabled: bool,
     pub quota_refresh_interval_seconds: u64,
     pub fast_mode_enabled: bool,
+    #[serde(default)]
+    pub one_million_context_enabled: bool,
 }
 
 const CODEX_CONFIG_FILE: &str = "openai_codex_config.json";
@@ -71,20 +76,24 @@ fn normalize_runtime_fields(config: &mut CodexServerConfig) {
     }
 }
 
-fn runtime_settings_from_config(config: &CodexServerConfig) -> CodexRuntimeSettings {
+fn runtime_settings_from_config(
+    config: &CodexServerConfig,
+    one_million_context_enabled: bool,
+) -> CodexRuntimeSettings {
     CodexRuntimeSettings {
         quota_refresh_enabled: config.quota_refresh_enabled,
         quota_refresh_interval_seconds: config.quota_refresh_interval_seconds,
         fast_mode_enabled: config.fast_mode_enabled,
+        one_million_context_enabled,
     }
 }
 
-/// 根据快速模式开关同步编辑用户目录下的 ~/.codex/config.toml：
-/// 开启时写入 service_tier = "fast" 和 [features] fast_mode = true；
-/// 关闭时移除这两处。路径与 Codex 切换账号一致。
-fn apply_fast_mode_to_codex_config_toml(
+/// 根据 Codex 运行时开关同步编辑用户目录下的 ~/.codex/config.toml：
+/// 分别维护快速模式字段，以及 1M 上下文窗口与自动压缩阈值。
+fn apply_runtime_settings_to_codex_config_toml(
     app: &tauri::AppHandle,
     fast_mode_enabled: bool,
+    one_million_context_enabled: bool,
 ) -> Result<(), String> {
     let home_dir = app
         .path()
@@ -93,7 +102,7 @@ fn apply_fast_mode_to_codex_config_toml(
     let codex_dir = home_dir.join(".codex");
     let config_path = codex_dir.join("config.toml");
 
-    if !fast_mode_enabled && !config_path.exists() {
+    if !fast_mode_enabled && !one_million_context_enabled && !config_path.exists() {
         return Ok(());
     }
 
@@ -120,10 +129,29 @@ fn apply_fast_mode_to_codex_config_toml(
         config.remove("features");
     }
 
+    set_one_million_context_fields(&mut config, one_million_context_enabled);
+
     let content = toml::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config.toml: {}", e))?;
     fs::write(&config_path, content).map_err(|e| format!("Failed to write config.toml: {}", e))?;
     Ok(())
+}
+
+fn read_one_million_context_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    let home_dir = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("Failed to get home directory: {}", e))?;
+    let config_path = home_dir.join(".codex").join("config.toml");
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read config.toml: {}", e))?;
+    let config: toml::Table =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse config.toml: {}", e))?;
+    Ok(has_one_million_context_fields(&config))
 }
 
 fn read_persisted_config(app: &tauri::AppHandle) -> Result<Option<CodexServerConfig>, String> {
@@ -605,7 +633,11 @@ pub async fn get_codex_runtime_settings(
 ) -> Result<CodexRuntimeSettings, String> {
     let mut config = get_or_load_codex_config(&app, state.inner())?;
     normalize_runtime_fields(&mut config);
-    Ok(runtime_settings_from_config(&config))
+    let one_million_context_enabled = read_one_million_context_enabled(&app)?;
+    Ok(runtime_settings_from_config(
+        &config,
+        one_million_context_enabled,
+    ))
 }
 
 #[tauri::command]
@@ -624,8 +656,15 @@ pub async fn set_codex_runtime_settings(
     *state.codex_server_config.lock().unwrap() = Some(config.clone());
     write_persisted_config(&app, &config)?;
     apply_periodic_tasks(app.clone(), &config).await;
-    apply_fast_mode_to_codex_config_toml(&app, settings.fast_mode_enabled)?;
-    Ok(runtime_settings_from_config(&config))
+    apply_runtime_settings_to_codex_config_toml(
+        &app,
+        settings.fast_mode_enabled,
+        settings.one_million_context_enabled,
+    )?;
+    Ok(runtime_settings_from_config(
+        &config,
+        settings.one_million_context_enabled,
+    ))
 }
 
 #[tauri::command]

@@ -50,20 +50,39 @@
         <option v-for="id in modelOptions" :key="id" :value="id" />
       </datalist>
 
-      <!-- Codex 专用：推理强度（与网关固定走 responses 协议，无需选择） -->
-      <div v-if="client === 'codex'" class="form-group">
-        <label class="label">{{ $t('gateway.clientSwitch.reasoningEffort') }}</label>
-        <FloatingDropdown placement="bottom-start">
-          <template #trigger="{ isOpen }">
-            <button type="button" class="input flex items-center justify-between text-left" :disabled="isLoading">
-              <span>{{ form.reasoningEffort }}</span>
-              <svg class="w-4 h-4 transition-transform" :class="{ 'rotate-180': isOpen }" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
-            </button>
-          </template>
-          <template #default="{ close }">
-            <button v-for="opt in reasoningOptions" :key="opt" @click="form.reasoningEffort = opt; close()" class="dropdown-item">{{ opt }}</button>
-          </template>
-        </FloatingDropdown>
+      <!-- Codex 专用：推理强度与上下文窗口 -->
+      <div v-if="client === 'codex'" class="flex gap-3">
+        <div class="form-group flex-1">
+          <label class="label">{{ $t('gateway.clientSwitch.reasoningEffort') }}</label>
+          <FloatingDropdown placement="bottom-start">
+            <template #trigger="{ isOpen }">
+              <button type="button" class="input flex items-center justify-between text-left" :disabled="isLoading">
+                <span>{{ form.reasoningEffort }}</span>
+                <svg class="w-4 h-4 transition-transform" :class="{ 'rotate-180': isOpen }" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+              </button>
+            </template>
+            <template #default="{ close }">
+              <button v-for="opt in reasoningOptions" :key="opt" @click="form.reasoningEffort = opt; close()" class="dropdown-item">{{ opt }}</button>
+            </template>
+          </FloatingDropdown>
+        </div>
+
+        <div class="form-group flex-1">
+          <label class="label">{{ $t('gateway.clientSwitch.oneMillionContext') }}</label>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="form.oneMillionContextEnabled"
+            class="input flex items-center justify-between gap-2 text-left"
+            :disabled="isLoading || isSettingsLoading"
+            @click="form.oneMillionContextEnabled = !form.oneMillionContextEnabled"
+          >
+            <span class="text-[13px]">{{ $t('gateway.clientSwitch.oneMillionContext') }}</span>
+            <span class="relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors" :class="form.oneMillionContextEnabled ? 'bg-accent' : 'bg-border'">
+              <span class="h-3.5 w-3.5 translate-y-[3px] rounded-full bg-text-inverse shadow transition-transform" :class="form.oneMillionContextEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'"></span>
+            </span>
+          </button>
+        </div>
       </div>
 
       <div class="form-group">
@@ -84,7 +103,7 @@
 
     <template #footer>
       <button class="btn btn--secondary" :disabled="isLoading" @click="handleClose">{{ $t('common.cancel') }}</button>
-      <button class="btn btn--primary" :disabled="!canSubmit || isLoading" @click="handleSwitch">
+      <button class="btn btn--primary" :disabled="!canSubmit || isLoading || isSettingsLoading" @click="handleSwitch">
         <span class="relative inline-flex items-center justify-center">
           <span :style="{ visibility: isLoading ? 'hidden' : 'visible' }">{{ $t('gateway.clientSwitch.switch') }}</span>
           <span v-if="isLoading" class="btn-spinner absolute inset-0 m-auto" aria-hidden="true"></span>
@@ -116,12 +135,14 @@ const form = ref({
   modelProvider: 'gateway',
   model: '',
   reasoningEffort: 'medium',
+  oneMillionContextEnabled: false,
   wireApi: 'responses',
   opusModel: '',
   sonnetModel: '',
   haikuModel: ''
 })
 const isLoading = ref(false)
+const isSettingsLoading = ref(false)
 const error = ref('')
 
 const modelOptions = computed(() => store.allModelIds())
@@ -142,14 +163,30 @@ const canSubmit = computed(() => {
   return true
 })
 
+const loadOneMillionContextSetting = async () => {
+  isSettingsLoading.value = true
+  try {
+    const settings = await invoke('get_codex_runtime_settings')
+    form.value.oneMillionContextEnabled = Boolean(settings?.one_million_context_enabled)
+  } catch (err) {
+    console.warn('Failed to load Codex context setting:', err)
+  } finally {
+    isSettingsLoading.value = false
+  }
+}
+
 watch(
   () => props.visible,
   (v) => {
     if (v) {
       error.value = ''
       isLoading.value = false
+      if (props.client === 'codex') {
+        loadOneMillionContextSetting()
+      }
     }
-  }
+  },
+  { immediate: true }
 )
 
 const handleClose = () => {
@@ -170,6 +207,7 @@ const handleSwitch = async () => {
         modelProvider: form.value.modelProvider.trim(),
         model: form.value.model.trim(),
         reasoningEffort: form.value.reasoningEffort,
+        oneMillionContextEnabled: form.value.oneMillionContextEnabled,
         wireApi: form.value.wireApi,
         baseUrl: resolvedBaseUrl.value,
         apiKey: apiKey.value

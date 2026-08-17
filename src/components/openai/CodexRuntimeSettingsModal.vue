@@ -52,6 +52,32 @@
           />
         </div>
       </div>
+
+      <div class="rounded-lg border border-border p-4">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <div class="text-sm font-semibold">{{ $t('platform.openai.codexRuntimeSettings.oneMillionContext.title') }}</div>
+            <p class="mt-1 text-xs text-text-muted">
+              {{ $t('platform.openai.codexRuntimeSettings.oneMillionContext.description') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="form.one_million_context_enabled"
+            :aria-label="$t('platform.openai.codexRuntimeSettings.oneMillionContext.title')"
+            class="relative mt-1 inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2"
+            :class="form.one_million_context_enabled ? 'bg-accent' : 'bg-border'"
+            :disabled="isLoading || isSaving"
+            @click="form.one_million_context_enabled = !form.one_million_context_enabled"
+          >
+            <span
+              class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-text-inverse shadow transition duration-200"
+              :class="form.one_million_context_enabled ? 'translate-x-6' : 'translate-x-1'"
+            />
+          </button>
+        </div>
+      </div>
     </div>
 
     <template #footer>
@@ -91,7 +117,8 @@ const isSaving = ref(false)
 const form = reactive({
   quota_refresh_enabled: true,
   quota_refresh_interval_minutes: 30,
-  fast_mode_enabled: false
+  fast_mode_enabled: false,
+  one_million_context_enabled: false
 })
 
 const clampInt = (value, min, max, fallback) => {
@@ -107,6 +134,7 @@ const applySettings = (settings) => {
   const quotaSec = clampInt(settings.quota_refresh_interval_seconds, 60, 86400, 1800)
   form.quota_refresh_interval_minutes = Math.round(quotaSec / 60)
   form.fast_mode_enabled = Boolean(settings.fast_mode_enabled)
+  form.one_million_context_enabled = Boolean(settings.one_million_context_enabled)
 }
 
 const loadSettings = async () => {
@@ -125,7 +153,8 @@ const loadSettings = async () => {
 const buildPayload = () => ({
   quota_refresh_enabled: form.quota_refresh_enabled,
   quota_refresh_interval_seconds: clampInt(form.quota_refresh_interval_minutes * 60, 60, 86400, 1800),
-  fast_mode_enabled: form.fast_mode_enabled
+  fast_mode_enabled: form.fast_mode_enabled,
+  one_million_context_enabled: form.one_million_context_enabled
 })
 
 const saveSettings = async () => {

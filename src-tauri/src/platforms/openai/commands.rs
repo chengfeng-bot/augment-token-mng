@@ -738,11 +738,42 @@ pub async fn openai_cancel_oauth_login() -> Result<(), String> {
     Ok(())
 }
 
+const ONE_MILLION_CONTEXT_WINDOW: i64 = 1_000_000;
+const ONE_MILLION_AUTO_COMPACT_TOKEN_LIMIT: i64 = 900_000;
+
+pub(crate) fn set_one_million_context_fields(config: &mut toml::Table, enabled: bool) {
+    if enabled {
+        config.insert(
+            "model_context_window".to_string(),
+            toml::Value::Integer(ONE_MILLION_CONTEXT_WINDOW),
+        );
+        config.insert(
+            "model_auto_compact_token_limit".to_string(),
+            toml::Value::Integer(ONE_MILLION_AUTO_COMPACT_TOKEN_LIMIT),
+        );
+    } else {
+        config.remove("model_context_window");
+        config.remove("model_auto_compact_token_limit");
+    }
+}
+
+pub(crate) fn has_one_million_context_fields(config: &toml::Table) -> bool {
+    config
+        .get("model_context_window")
+        .and_then(toml::Value::as_integer)
+        == Some(ONE_MILLION_CONTEXT_WINDOW)
+        && config
+            .get("model_auto_compact_token_limit")
+            .and_then(toml::Value::as_integer)
+            == Some(ONE_MILLION_AUTO_COMPACT_TOKEN_LIMIT)
+}
+
 fn switch_codex_to_api_profile(
     app: &AppHandle,
     model_provider: &str,
     model: &str,
     reasoning_effort: Option<&str>,
+    one_million_context_enabled: Option<bool>,
     wire_api: Option<&str>,
     base_url: &str,
     api_key: &str,
@@ -808,6 +839,10 @@ fn switch_codex_to_api_profile(
         config.remove("model_reasoning_effort");
     }
 
+    if let Some(enabled) = one_million_context_enabled {
+        set_one_million_context_fields(&mut config, enabled);
+    }
+
     // 重建 [model_providers]，仅保留当前 provider，其他同级 provider 全部清理
     let mut provider_config = toml::Table::new();
     provider_config.insert(
@@ -864,6 +899,7 @@ pub async fn codex_switch_account(
     model_provider: String,
     model: String,
     reasoning_effort: Option<String>,
+    one_million_context_enabled: bool,
     wire_api: Option<String>,
     base_url: String,
     api_key: String,
@@ -873,6 +909,7 @@ pub async fn codex_switch_account(
         &model_provider,
         &model,
         reasoning_effort.as_deref(),
+        Some(one_million_context_enabled),
         wire_api.as_deref(),
         &base_url,
         &api_key,
@@ -930,6 +967,7 @@ pub async fn openai_switch_account(app: AppHandle, account_id: String) -> Result
             provider_name,
             model_name,
             api_config.model_reasoning_effort.as_deref(),
+            None,
             api_config.wire_api.as_deref(),
             base_url,
             api_key,

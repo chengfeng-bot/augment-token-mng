@@ -121,6 +121,7 @@ export default {
       model: '模型',
       modelPlaceholder: '输入或选择网关中的模型',
       reasoningEffort: '推理强度',
+      oneMillionContext: '开启 1M 上下文',
       baseUrl: 'Base URL',
       apiKey: 'API Key',
       switch: '应用并切换',
@@ -2188,6 +2189,7 @@ export default {
         stopSuccess: 'Codex 路由已禁用',
         toggleFailed: '操作失败: {error}',
         quickSwitch: '快捷切换',
+        oneMillionContext: '开启 1M 上下文',
         clickToUseAccount: '点击使用账号',
         switchAccount: '切换账号',
         switchSuccess: '账号切换成功',
@@ -2203,6 +2205,10 @@ export default {
         fastMode: {
           title: '快速模式',
           description: '修改 Codex 配置文件（~/.codex/config.toml）中的 service_tier 与 fast_mode。'
+        },
+        oneMillionContext: {
+          title: '1M 上下文',
+          description: '开启时写入 1,000,000 上下文窗口与 900,000 自动压缩阈值；关闭时移除这两项配置。'
         },
         messages: {
           loadFailed: '加载设置失败: {error}',

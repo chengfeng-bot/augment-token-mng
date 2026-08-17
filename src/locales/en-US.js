@@ -121,6 +121,7 @@ export default {
       model: 'Model',
       modelPlaceholder: 'Enter or pick a model from the gateway',
       reasoningEffort: 'Reasoning effort',
+      oneMillionContext: 'Enable 1M context',
       baseUrl: 'Base URL',
       apiKey: 'API Key',
       switch: 'Apply and switch',
@@ -2195,6 +2196,7 @@ export default {
         stopSuccess: 'Codex route disabled',
         toggleFailed: 'Operation failed: {error}',
         quickSwitch: 'Quick Switch',
+        oneMillionContext: 'Enable 1M context',
         clickToUseAccount: 'Click to use account',
         switchAccount: 'Switch Account',
         switchSuccess: 'Account switched successfully',
@@ -2210,6 +2212,10 @@ export default {
         fastMode: {
           title: 'Fast Mode',
           description: 'Modify Codex config file (~/.codex/config.toml) for service_tier and fast_mode.'
+        },
+        oneMillionContext: {
+          title: '1M Context',
+          description: 'Write a 1,000,000-token context window and 900,000-token auto-compaction limit when enabled; remove both settings when disabled.'
         },
         messages: {
           loadFailed: 'Failed to load settings: {error}',

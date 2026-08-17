@@ -36,8 +36,8 @@
         </datalist>
       </div>
 
-      <div class="flex gap-3">
-        <div class="form-group flex-1">
+      <div class="grid gap-3" :class="type === 'codex' ? 'grid-cols-2' : 'grid-cols-1'">
+        <div class="form-group">
           <label class="label">{{ $t('platform.openai.addAccountDialog.reasoningEffort') }}</label>
           <FloatingDropdown placement="bottom-start">
             <template #trigger="{ isOpen }">
@@ -54,24 +54,41 @@
           </FloatingDropdown>
         </div>
 
-        <!-- Codex 专用：wireApi -->
-        <div v-if="type === 'codex'" class="form-group flex-1">
-          <label class="label">{{ $t('platform.openai.addAccountDialog.wireApi') }}</label>
-          <FloatingDropdown placement="bottom-start">
-            <template #trigger="{ isOpen }">
-              <button type="button" class="input flex items-center justify-between text-left" :disabled="isLoading">
-                <span>{{ form.wireApi }}</span>
-                <svg class="w-4 h-4 transition-transform" :class="{ 'rotate-180': isOpen }" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M7 10l5 5 5-5z"/>
-                </svg>
-              </button>
-            </template>
-            <template #default="{ close }">
-              <button @click="form.wireApi = 'responses'; close()" class="dropdown-item">responses</button>
-              <button @click="form.wireApi = 'chat'; close()" class="dropdown-item">chat</button>
-            </template>
-          </FloatingDropdown>
+        <div v-if="type === 'codex'" class="form-group">
+          <label class="label">{{ $t('platform.openai.codexDialog.oneMillionContext') }}</label>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="form.oneMillionContextEnabled"
+            class="input flex items-center justify-between gap-2 text-left"
+            :disabled="isLoading || isSettingsLoading"
+            @click="form.oneMillionContextEnabled = !form.oneMillionContextEnabled"
+          >
+            <span class="text-[13px]">{{ $t('platform.openai.codexDialog.oneMillionContext') }}</span>
+            <span class="relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors" :class="form.oneMillionContextEnabled ? 'bg-accent' : 'bg-border'">
+              <span class="h-3.5 w-3.5 translate-y-[3px] rounded-full bg-text-inverse shadow transition-transform" :class="form.oneMillionContextEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'"></span>
+            </span>
+          </button>
         </div>
+      </div>
+
+      <!-- Codex 专用：wireApi -->
+      <div v-if="type === 'codex'" class="form-group">
+        <label class="label">{{ $t('platform.openai.addAccountDialog.wireApi') }}</label>
+        <FloatingDropdown placement="bottom-start">
+          <template #trigger="{ isOpen }">
+            <button type="button" class="input flex items-center justify-between text-left" :disabled="isLoading">
+              <span>{{ form.wireApi }}</span>
+              <svg class="w-4 h-4 transition-transform" :class="{ 'rotate-180': isOpen }" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M7 10l5 5 5-5z"/>
+              </svg>
+            </button>
+          </template>
+          <template #default="{ close }">
+            <button @click="form.wireApi = 'responses'; close()" class="dropdown-item">responses</button>
+            <button @click="form.wireApi = 'chat'; close()" class="dropdown-item">chat</button>
+          </template>
+        </FloatingDropdown>
       </div>
 
       <div class="form-group">
@@ -94,7 +111,7 @@
 
     <template #footer>
       <button @click="handleClose" class="btn btn--secondary" :disabled="isLoading">{{ $t('common.cancel') }}</button>
-      <button @click="handleSwitch" class="btn btn--primary" :disabled="!canSubmit || isLoading">
+      <button @click="handleSwitch" class="btn btn--primary" :disabled="!canSubmit || isLoading || isSettingsLoading">
         <span class="relative inline-flex items-center justify-center">
           <span :style="{ visibility: isLoading ? 'hidden' : 'visible' }">{{ $t('platform.openai.codexDialog.switchAccount') }}</span>
           <span v-if="isLoading" class="btn-spinner absolute inset-0 m-auto" aria-hidden="true"></span>
@@ -126,11 +143,13 @@ const form = ref({
   modelProvider: 'codex',
   model: '',
   reasoningEffort: 'medium',
+  oneMillionContextEnabled: false,
   wireApi: 'responses'
 })
 
 const reasoningOptions = ['low', 'medium', 'high', 'xhigh', 'max']
 const isLoading = ref(false)
+const isSettingsLoading = ref(false)
 const error = ref('')
 
 // 与网关渠道一致：取已同步模型目录中 OpenAI 提供商的模型 ID
@@ -148,8 +167,23 @@ const modelOptions = computed(() => {
   return ids
 })
 
+const loadOneMillionContextSetting = async () => {
+  isSettingsLoading.value = true
+  try {
+    const settings = await invoke('get_codex_runtime_settings')
+    form.value.oneMillionContextEnabled = Boolean(settings?.one_million_context_enabled)
+  } catch (err) {
+    console.warn('Failed to load Codex context setting:', err)
+  } finally {
+    isSettingsLoading.value = false
+  }
+}
+
 onMounted(() => {
   gatewayStore.loadModels()
+  if (props.type === 'codex') {
+    loadOneMillionContextSetting()
+  }
 })
 
 const canSubmit = computed(() => {
@@ -175,6 +209,7 @@ const handleSwitch = async () => {
         modelProvider: form.value.modelProvider.trim(),
         model: form.value.model.trim(),
         reasoningEffort: form.value.reasoningEffort,
+        oneMillionContextEnabled: form.value.oneMillionContextEnabled,
         wireApi: form.value.wireApi,
         baseUrl: props.baseUrl,
         apiKey: props.apiKey
