@@ -31,7 +31,7 @@
         :class="['flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-75', index === activeIndex ? 'bg-hover' : '']"
         :ref="el => { if (index === activeIndex) activeItemRef = el }"
         @click="openBookmark(bookmark, $event)"
-        @mouseenter="activeIndex = index"
+        @mousemove="activeIndex = index"
       >
         <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white" :style="{ background: bookmark.tag_color || DEFAULT_TAG_COLOR }">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" opacity="0.9">
@@ -93,6 +93,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { useI18n } from 'vue-i18n'
 import { match as pinyinMatch } from 'pinyin-pro'
+import { getSpotlightShortcut, isSpotlightEnabled } from '../../utils/spotlightShortcut'
 
 const { t: $t, locale } = useI18n()
 
@@ -109,12 +110,12 @@ const isLoading = ref(false)
 const searchInputRef = ref(null)
 const resultsRef = ref(null)
 const activeItemRef = ref(null)
+const currentShortcutDisplay = ref('')
 
 // 读取当前全局快捷键用于 footer 展示
-const currentShortcutDisplay = computed(() => {
-  const saved = localStorage.getItem('atm-spotlight-shortcut')
-  return saved || ''
-})
+const syncShortcutDisplay = () => {
+  currentShortcutDisplay.value = isSpotlightEnabled() ? (getSpotlightShortcut() || '') : ''
+}
 
 // 文本匹配检查（直接 + 拼音）
 const textMatch = (target, q) => {
@@ -316,6 +317,7 @@ let unlistenFocus = null
 
 // 同步主题和语言：从 localStorage 读取并应用到当前窗口
 const syncPreferences = () => {
+  syncShortcutDisplay()
   try {
     const theme = localStorage.getItem('atm-theme')
     if (theme === 'dark' || theme === 'light') {

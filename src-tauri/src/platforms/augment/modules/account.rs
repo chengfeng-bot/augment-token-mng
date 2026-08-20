@@ -3,9 +3,9 @@ use std::time::SystemTime;
 use super::oauth::extract_token_from_session;
 use crate::http_client::{create_http_client_with_cookies, create_proxy_client};
 use crate::platforms::augment::models::{
-    AccountStatus, BatchCreditConsumptionResponse, CompleteUserInfo, CreditConsumptionResponse,
-    CreditInfoResponse, CreditsInfoResponse, ModelsResponse, PaymentMethodLinkResponse, PortalInfo,
-    SubscriptionInfo, TokenInfo, TokenStatusResult, UserInfo,
+    AccountStatus, BatchCreditConsumptionResponse, CompleteUserInfo, CreditInfoResponse,
+    CreditsInfoResponse, ModelsResponse, PaymentMethodLinkResponse, PortalInfo, SubscriptionInfo,
+    TokenInfo, TokenStatusResult, UserInfo,
 };
 
 pub async fn check_account_ban_status(
@@ -1022,7 +1022,10 @@ pub async fn get_batch_credit_consumption_with_app_session(
 
             println!("Stats response: {}", response_text);
 
-            serde_json::from_str::<CreditConsumptionResponse>(&response_text).map_err(|e| {
+            serde_json::from_str::<crate::platforms::augment::models::CreditConsumptionResponse>(
+                &response_text,
+            )
+            .map_err(|e| {
                 format!(
                     "Failed to parse stats response: {}. Response body: {}",
                     e, response_text
@@ -1064,7 +1067,10 @@ pub async fn get_batch_credit_consumption_with_app_session(
 
             println!("Chart response: {}", response_text);
 
-            serde_json::from_str::<CreditConsumptionResponse>(&response_text).map_err(|e| {
+            serde_json::from_str::<crate::platforms::augment::models::CreditConsumptionResponse>(
+                &response_text,
+            )
+            .map_err(|e| {
                 format!(
                     "Failed to parse chart response: {}. Response body: {}",
                     e, response_text

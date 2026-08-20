@@ -294,6 +294,11 @@ import SettingsPage from './components/pages/SettingsPage.vue'
 import SubscriptionPage from './components/pages/SubscriptionPage.vue'
 import GatewayPage from './components/pages/GatewayPage.vue'
 import SpotlightSearch from './components/spotlight/SpotlightSearch.vue'
+import {
+  getSpotlightShortcut,
+  isSpotlightEnabled,
+  setSpotlightEnabled
+} from './utils/spotlightShortcut'
 
 const { t, locale } = useI18n()
 
@@ -600,13 +605,14 @@ onMounted(async () => {
   // 初始化 Dock 图标状态（macOS，根据用户设置）
   settingsStore.initializeDock()
 
-  // 自动注册 Spotlight 快捷键（如果之前配置过）
-  const savedSpotlightShortcut = localStorage.getItem('atm-spotlight-shortcut')
-  if (savedSpotlightShortcut) {
+  // 根据持久化开关状态自动注册 Spotlight 快捷键
+  const savedSpotlightShortcut = getSpotlightShortcut()
+  if (isSpotlightEnabled() && savedSpotlightShortcut) {
     try {
       await invoke('register_spotlight_shortcut', { shortcut: savedSpotlightShortcut })
     } catch (e) {
       console.warn('Failed to auto-register spotlight shortcut:', e)
+      setSpotlightEnabled(false)
     }
   }
 

@@ -207,6 +207,13 @@ import DatabaseConfig from '../settings/DatabaseConfig.vue'
 import WebDavConfig from '../settings/WebDavConfig.vue'
 import FontConfig from '../settings/FontConfig.vue'
 import TelegramConfig from '../settings/TelegramConfig.vue'
+import {
+  DEFAULT_SPOTLIGHT_SHORTCUT,
+  getSpotlightShortcut,
+  isSpotlightEnabled,
+  setSpotlightEnabled,
+  setSpotlightShortcut
+} from '../../utils/spotlightShortcut'
 
 // i18n
 const { t } = useI18n()
@@ -242,9 +249,8 @@ const isTogglingTray = ref(false)
 const isTogglingDock = ref(false)
 
 // Spotlight shortcut
-const SPOTLIGHT_SHORTCUT_KEY = 'atm-spotlight-shortcut'
-const spotlightShortcut = ref(localStorage.getItem(SPOTLIGHT_SHORTCUT_KEY) || 'Alt+Space')
-const spotlightEnabled = ref(false)
+const spotlightShortcut = ref(getSpotlightShortcut() || DEFAULT_SPOTLIGHT_SHORTCUT)
+const spotlightEnabled = ref(isSpotlightEnabled())
 const isRecordingShortcut = ref(false)
 const shortcutRecorderRef = ref(null)
 
@@ -285,7 +291,7 @@ const stopRecordingShortcut = () => {
   isRecordingShortcut.value = false
 }
 
-const handleShortcutKeydown = (e) => {
+const handleShortcutKeydown = async (e) => {
   if (!isRecordingShortcut.value) return
   e.preventDefault()
   e.stopPropagation()
@@ -323,11 +329,13 @@ const handleShortcutKeydown = (e) => {
   if (parts.length < 2) return
 
   spotlightShortcut.value = parts.join('+')
+  setSpotlightShortcut(spotlightShortcut.value)
   isRecordingShortcut.value = false
   shortcutRecorderRef.value?.blur()
 
-  // Auto-register after recording
-  handleRegisterSpotlightShortcut()
+  if (spotlightEnabled.value) {
+    await handleRegisterSpotlightShortcut()
+  }
 }
 
 // Configuration cards data
@@ -436,12 +444,14 @@ const handleRegisterSpotlightShortcut = async () => {
   if (!shortcut) return
   try {
     await invoke('register_spotlight_shortcut', { shortcut })
-    localStorage.setItem(SPOTLIGHT_SHORTCUT_KEY, shortcut)
+    setSpotlightShortcut(shortcut)
+    setSpotlightEnabled(true)
     spotlightEnabled.value = true
     window.$notify?.success(t('spotlight.registerSuccess'))
   } catch (error) {
     console.error('Failed to register spotlight shortcut:', error)
     window.$notify?.error(t('spotlight.registerFailed') + ': ' + error)
+    setSpotlightEnabled(false)
     spotlightEnabled.value = false
   }
 }
@@ -449,6 +459,7 @@ const handleRegisterSpotlightShortcut = async () => {
 const handleUnregisterSpotlightShortcut = async () => {
   try {
     await invoke('unregister_spotlight_shortcut')
+    setSpotlightEnabled(false)
     spotlightEnabled.value = false
     window.$notify?.success(t('spotlight.unregisterSuccess'))
   } catch (error) {
@@ -457,17 +468,39 @@ const handleUnregisterSpotlightShortcut = async () => {
 }
 
 const initSpotlightShortcut = async () => {
-  const saved = localStorage.getItem(SPOTLIGHT_SHORTCUT_KEY)
-  if (saved) {
-    try {
-      const registered = await invoke('is_spotlight_shortcut_registered', { shortcut: saved })
-      spotlightEnabled.value = registered
-      if (!registered) {
-        await invoke('register_spotlight_shortcut', { shortcut: saved })
-        spotlightEnabled.value = true
-      }
-    } catch {
+  const saved = getSpotlightShortcut()
+  const enabled = isSpotlightEnabled()
+  spotlightEnabled.value = enabled
+
+  if (!saved) {
+    if (enabled) {
+      setSpotlightEnabled(false)
       spotlightEnabled.value = false
+    }
+    return
+  }
+
+  let registered
+  try {
+    registered = await invoke('is_spotlight_shortcut_registered', { shortcut: saved })
+  } catch (error) {
+    console.error('Failed to query spotlight shortcut status:', error)
+    return
+  }
+
+  if (enabled && !registered) {
+    try {
+      await invoke('register_spotlight_shortcut', { shortcut: saved })
+    } catch (error) {
+      console.error('Failed to restore spotlight shortcut:', error)
+      setSpotlightEnabled(false)
+      spotlightEnabled.value = false
+    }
+  } else if (!enabled && registered) {
+    try {
+      await invoke('unregister_spotlight_shortcut')
+    } catch (error) {
+      console.error('Failed to reconcile disabled spotlight shortcut:', error)
     }
   }
 }
