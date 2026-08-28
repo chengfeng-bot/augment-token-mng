@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -20,7 +20,9 @@ use super::affinity::extract_session_key;
 use super::canonical::{StreamEvent, Usage};
 use super::config::{ChannelKind, GatewayChannel};
 use super::executor::GatewayExecutor;
-use super::translate::stream_bridge::{SseDecoder, StreamBridge, inbound_for, outbound_for};
+use super::translate::stream_bridge::{
+    SseDecoder, StreamBridge, StreamSanitizer, inbound_for, outbound_for,
+};
 use super::translate::{ParseState, Wire};
 use super::usage::{GATEWAY_USAGE_CHANGED_EVENT, UsageChange, UsageRecord};
 use crate::AppState;
@@ -581,8 +583,8 @@ async fn destream_reply(
         match chunk {
             Ok(bytes) => {
                 raw.push_str(&String::from_utf8_lossy(&bytes));
-                for (event, data) in decoder.push(&bytes) {
-                    for ev in out_tr.parse_stream(event.as_deref(), &data, &mut parse) {
+                for frame in decoder.push(&bytes) {
+                    for ev in out_tr.parse_stream(frame.event.as_deref(), &frame.data, &mut parse) {
                         acc.apply(&ev);
                     }
                 }
@@ -635,6 +637,9 @@ async fn destream_reply(
     buffered_response(response_status, "application/json", body_bytes)
 }
 
+const CLIENT_IDLE_PING: Duration = Duration::from_secs(15);
+const SSE_IDLE_PING: &[u8] = b": ping\n\n";
+
 /// 流式回转：跨协议经 `StreamBridge` 转换，同线型透传；旁路采集 TTFT/usage
 fn build_streaming_reply(
     state: Arc<AppState>,
@@ -667,60 +672,87 @@ fn build_streaming_reply(
             None
         };
         let mut decoder = SseDecoder::default();
+        let sanitizer = StreamSanitizer;
         let out_tr = outbound_for(channel_wire);
         let mut parse = ParseState {
             model: model.clone(),
             ..Default::default()
         };
-        while let Some(chunk) = upstream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    let forward: Vec<u8> = if let Some(b) = bridge.as_mut() {
-                        let out = b.push(&bytes);
-                        usage = b.usage();
-                        if rec.error.is_none() {
-                            rec.error = b.error();
-                        }
-                        out
-                    } else {
-                        for (event, data) in decoder.push(&bytes) {
-                            let events = out_tr.parse_stream(event.as_deref(), &data, &mut parse);
-                            for ev in events {
-                                match ev {
-                                    StreamEvent::Usage(u) => usage = u,
-                                    StreamEvent::Error { message } => {
-                                        if rec.error.is_none() {
-                                            rec.error = Some(message);
+        let mut last_write = Instant::now();
+        loop {
+            let wait = CLIENT_IDLE_PING.saturating_sub(last_write.elapsed());
+            tokio::select! {
+                chunk = upstream.next() => {
+                    match chunk {
+                        Some(Ok(bytes)) => {
+                            let forward: Vec<u8> = if let Some(b) = bridge.as_mut() {
+                                let out = b.push(&bytes);
+                                usage = b.usage();
+                                if rec.error.is_none() {
+                                    rec.error = b.error();
+                                }
+                                out
+                            } else {
+                                let mut forward = Vec::new();
+                                for frame in decoder.push(&bytes) {
+                                    forward.extend(sanitizer.passthrough(&frame, wire));
+                                    let events = out_tr.parse_stream(
+                                        frame.event.as_deref(),
+                                        &frame.data,
+                                        &mut parse,
+                                    );
+                                    for ev in events {
+                                        match ev {
+                                            StreamEvent::Usage(u) => usage = u,
+                                            StreamEvent::Error { message } => {
+                                                if rec.error.is_none() {
+                                                    rec.error = Some(message);
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    _ => {}
+                                }
+                                forward
+                            };
+                            if !forward.is_empty() {
+                                if ttft.is_none() {
+                                    ttft = Some(started.elapsed().as_millis());
+                                }
+                                if let Some(s) = maybe_tx.as_mut() {
+                                    if s.send(Ok(Bytes::from(forward))).await.is_err() {
+                                        maybe_tx = None;
+                                    } else {
+                                        last_write = Instant::now();
+                                    }
                                 }
                             }
                         }
-                        bytes.to_vec()
-                    };
-                    if !forward.is_empty() {
-                        if ttft.is_none() {
-                            ttft = Some(started.elapsed().as_millis());
-                        }
-                        if let Some(s) = maybe_tx.as_mut() {
-                            if s.send(Ok(Bytes::from(forward))).await.is_err() {
-                                maybe_tx = None;
+                        Some(Err(e)) => {
+                            rec.error = Some(format!("上游流读取失败: {}", e));
+                            if let Some(s) = maybe_tx.as_mut() {
+                                let _ = s
+                                    .send(Err(std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("{}", e),
+                                    )))
+                                    .await;
                             }
+                            break;
                         }
+                        None => break,
                     }
                 }
-                Err(e) => {
-                    rec.error = Some(format!("上游流读取失败: {}", e));
+                _ = tokio::time::sleep(wait) => {
                     if let Some(s) = maybe_tx.as_mut() {
-                        let _ = s
-                            .send(Err(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("{}", e),
-                            )))
-                            .await;
+                        if s.send(Ok(Bytes::from_static(SSE_IDLE_PING))).await.is_err() {
+                            maybe_tx = None;
+                            break;
+                        }
+                        last_write = Instant::now();
+                    } else {
+                        break;
                     }
-                    break;
                 }
             }
         }
