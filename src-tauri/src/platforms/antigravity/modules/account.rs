@@ -131,7 +131,11 @@ pub async fn fetch_quota_with_retry(
 
     // 2. 尝试查询
     println!("Attempting to fetch quota...");
-    let result = quota::fetch_quota(&account.token.access_token).await;
+    let result = quota::fetch_quota(
+        &account.token.access_token,
+        account.token.project_id.as_deref(),
+    )
+    .await;
 
     if let Ok((ref _quota, ref project_id)) = result {
         if project_id.is_some() && *project_id != account.token.project_id {
@@ -158,14 +162,17 @@ pub async fn fetch_quota_with_retry(
                 }
             };
 
-            let new_token = TokenData::new(
+            let mut new_token = TokenData::new(
                 token_res.access_token.clone(),
                 account.token.refresh_token.clone(),
                 token_res.expires_in,
                 account.token.email.clone(),
                 account.token.project_id.clone(),
-                None,
+                account.token.session_id.clone(),
             );
+            new_token.oauth_client_key = account.token.oauth_client_key.clone();
+            new_token.is_gcp_tos = account.token.is_gcp_tos;
+            new_token.id_token = account.token.id_token.clone();
 
             account.token = new_token.clone();
             account.updated_at = chrono::Utc::now().timestamp();
@@ -173,7 +180,11 @@ pub async fn fetch_quota_with_retry(
 
             // 重试查询
             println!("Retrying quota fetch with new token...");
-            let retry_result = quota::fetch_quota(&new_token.access_token).await;
+            let retry_result = quota::fetch_quota(
+                &new_token.access_token,
+                new_token.project_id.as_deref(),
+            )
+            .await;
             if let Ok((ref _quota, ref project_id)) = retry_result {
                 if project_id.is_some() && *project_id != account.token.project_id {
                     account.token.project_id = project_id.clone();

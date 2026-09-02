@@ -1745,7 +1745,25 @@ export default {
         refreshTokenPlaceholder: 'Paste your Refresh Token here...',
         refreshTokenHint: 'Get refresh_token from Antigravity database or network requests',
         adding: 'Adding...',
-        add: 'Add Account'
+        add: 'Add Account',
+        importMethod: 'Import'
+      },
+      importDialog: {
+        title: 'Import Accounts',
+        info: 'Import exported Antigravity accounts from a JSON file. Supports ATM export format, Refresh Token arrays, and email + refresh_token objects.',
+        formatExample: 'Import Format',
+        selectFile: 'Select File',
+        clickToSelect: 'Click to select JSON file',
+        supportFormat: 'Supports ATM export / Refresh Token array / account objects',
+        reselect: 'Reselect',
+        previewTitle: 'Preview ({count} accounts)',
+        resultTitle: 'Import Result',
+        resultSummary: 'Success {success} / Failed {failed} / Total {total}',
+        import: 'Import ({count})',
+        emptyFile: 'File is empty or has no valid account data',
+        invalidFormat: 'Invalid JSON format',
+        readError: 'Failed to read file',
+        importFailed: 'Import failed'
       },
       messages: {
         switchSuccess: 'Account switched successfully',
@@ -1758,7 +1776,8 @@ export default {
         deleteSuccess: 'Account deleted successfully',
         deleteFailed: 'Delete failed: {error}',
         batchDeleteConfirm: 'Are you sure you want to delete {count} selected accounts?',
-        noSelection: 'Please select accounts to operate'
+        noSelection: 'Please select accounts to operate',
+        importSuccess: 'Successfully imported {count} accounts'
       },
       export: 'Export Accounts',
       exportSuccess: 'Accounts exported successfully',

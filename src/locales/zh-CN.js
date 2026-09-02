@@ -1749,7 +1749,25 @@ export default {
         refreshTokenPlaceholder: '粘贴你的 Refresh Token...',
         refreshTokenHint: '从 Antigravity 的数据库或网络请求中获取 refresh_token',
         adding: '添加中...',
-        add: '添加账号'
+        add: '添加账号',
+        importMethod: '导入'
+      },
+      importDialog: {
+        title: '导入账号',
+        info: '从 JSON 文件导入已导出的 Antigravity 账号。支持 ATM 导出格式、Refresh Token 数组，以及 email + refresh_token 对象。',
+        formatExample: '导入格式',
+        selectFile: '选择文件',
+        clickToSelect: '点击选择 JSON 文件',
+        supportFormat: '支持 ATM 导出 / Refresh Token 数组 / 账号对象',
+        reselect: '重新选择',
+        previewTitle: '预览（共 {count} 个账号）',
+        resultTitle: '导入结果',
+        resultSummary: '成功 {success} / 失败 {failed} / 共 {total}',
+        import: '导入 ({count})',
+        emptyFile: '文件内容为空或没有有效的账号数据',
+        invalidFormat: '无效的 JSON 格式',
+        readError: '读取文件失败',
+        importFailed: '导入失败'
       },
       messages: {
         switchSuccess: '账号切换成功',
@@ -1762,7 +1780,8 @@ export default {
         deleteSuccess: '账号删除成功',
         deleteFailed: '删除失败: {error}',
         batchDeleteConfirm: '确定要删除选中的 {count} 个账号吗？',
-        noSelection: '请先选择要操作的账号'
+        noSelection: '请先选择要操作的账号',
+        importSuccess: '成功导入 {count} 个账号'
       },
       export: '导出账号',
       exportSuccess: '账号导出成功',

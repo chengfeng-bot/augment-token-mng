@@ -444,7 +444,7 @@
     />
 
     <!-- Add Account Dialog -->
-    <AddAccountDialog v-if="showAddDialog" @close="showAddDialog = false" @add="handleAddAccount" @added="handleAccountAdded" />
+    <AddAccountDialog v-if="showAddDialog" @close="showAddDialog = false" @add="handleAddAccount" @added="handleAccountAdded" @imported="handleAccountsImported" />
     <ModelsModal
       v-if="showModelsModal"
       :visible="showModelsModal"
@@ -900,6 +900,14 @@ const handleAccountAdded = async (account) => {
     markItemUpsertById(account.id)
   }
   window.$notify?.success($t('platform.antigravity.messages.addSuccess'))
+}
+
+const handleAccountsImported = async (result) => {
+  await loadAccounts()
+  if (result?.success_count > 0) {
+    window.$notify?.success($t('platform.antigravity.messages.importSuccess', { count: result.success_count }))
+    result.accountIds?.forEach(id => markItemUpsertById(id))
+  }
 }
 
 const handleDelete = async (accountId) => {
