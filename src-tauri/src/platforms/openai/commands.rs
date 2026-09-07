@@ -857,6 +857,10 @@ fn switch_codex_to_api_profile(
         "wire_api".to_string(),
         toml::Value::String(wire_api_value.to_string()),
     );
+    provider_config.insert(
+        "requires_openai_auth".to_string(),
+        toml::Value::Boolean(true),
+    );
     let mut providers = toml::Table::new();
     providers.insert(
         model_provider.to_string(),
