@@ -5,6 +5,7 @@ pub mod platforms {
     pub mod cursor;
     pub mod openai;
     pub mod windsurf;
+    pub mod workbuddy;
 }
 
 pub mod features {
@@ -43,7 +44,7 @@ pub use core::{
 };
 pub use data::{database, storage};
 pub use features::mail;
-pub use platforms::{antigravity, augment, claude, cursor, openai, windsurf};
+pub use platforms::{antigravity, augment, claude, cursor, openai, windsurf, workbuddy};
 
 use crate::core::gateway::affinity::SessionAffinity;
 use crate::core::gateway::config::GatewayConfig;
@@ -671,6 +672,11 @@ pub fn run() {
             openai::openai_switch_account,
             openai::codex_switch_account,
             openai::droid_switch_account,
+
+            // WorkBuddy 自定义渠道与模型
+            workbuddy::workbuddy_get_config,
+            workbuddy::workbuddy_save_config,
+            workbuddy::workbuddy_fetch_models,
 
             // Antigravity 管理命令
             antigravity::antigravity_list_accounts,

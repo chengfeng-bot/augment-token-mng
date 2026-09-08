@@ -57,6 +57,7 @@ import WindsurfAccountManager from '../platform/WindsurfAccountManager.vue'
 import CursorAccountManager from '../platform/CursorAccountManager.vue'
 import OpenAIAccountManager from '../platform/OpenAIAccountManager.vue'
 import ClaudeAccountManager from '../platform/ClaudeAccountManager.vue'
+import WorkBuddyManager from '../platform/WorkBuddyManager.vue'
 
 const props = defineProps({
   isDarkTheme: {
@@ -110,6 +111,13 @@ const platforms = computed(() => [
     name: 'Claude Code',
     icon: '/icons/claude.svg',
     component: ClaudeAccountManager,
+    enabled: true
+  },
+  {
+    id: 'workbuddy',
+    name: 'WorkBuddy',
+    icon: '/icons/workbuddy.svg',
+    component: WorkBuddyManager,
     enabled: true
   }
 ])
