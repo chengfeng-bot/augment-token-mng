@@ -141,6 +141,31 @@ const draft = ref({ label: '', url: '', apiKey: '', models: [] })
 const manualModelId = ref('')
 
 const CHANNEL_LABELS_KEY = 'atm-workbuddy-channel-labels'
+const DEFAULT_REASONING = Object.freeze({
+  defaultEffort: 'high',
+  supportedEfforts: ['high', 'low', 'medium', 'xhigh', 'max'],
+  canDisableThinking: false
+})
+const withWorkBuddyDefaults = (model, channel = {}) => ({
+  ...model,
+  id: model.id,
+  name: model.name || model.id,
+  vendor: model.vendor || 'Custom',
+  url: model.url || channel.url || '',
+  apiKey: model.apiKey ?? channel.apiKey ?? '',
+  supportsImages: model.supportsImages ?? true,
+  supportsReasoning: model.supportsReasoning ?? true,
+  supportsToolCall: model.supportsToolCall ?? true,
+  useCustomProtocol: model.useCustomProtocol ?? false,
+  reasoning: {
+    ...DEFAULT_REASONING,
+    ...(model.reasoning || {}),
+    supportedEfforts: Array.isArray(model.reasoning?.supportedEfforts) && model.reasoning.supportedEfforts.length
+      ? model.reasoning.supportedEfforts
+      : [...DEFAULT_REASONING.supportedEfforts]
+  },
+  onlyReasoning: model.onlyReasoning ?? true
+})
 const keyForChannel = (url, apiKey) => {
   const source = `${String(url || '').trim().replace(/\/$/, '')}\u0000${String(apiKey || '').trim()}`
   let hash = 2166136261
@@ -198,7 +223,7 @@ const loadConfig = async () => {
       const apiKey = model.apiKey || ''
       const id = keyForChannel(url, apiKey)
       if (!groups.has(id)) groups.set(id, { id, label: labels[id] || (model.vendor && model.vendor !== 'Custom' ? model.vendor : `渠道 ${groups.size + 1}`), url, apiKey, models: [] })
-      groups.get(id).models.push({ ...model })
+      groups.get(id).models.push(withWorkBuddyDefaults(model, { url, apiKey }))
     })
     channels.value = [...groups.values()]
     selectedKeys.value = new Set(channels.value.flatMap((channel) => channel.models.map((model) => modelKey(channel, model))))
@@ -224,9 +249,7 @@ const addManualModel = () => {
   if (!id) return
   const current = draft.value.models || []
   if (!current.some((model) => model.id === id)) {
-    draft.value.models = [...current, {
-      id, name: id, vendor: 'Custom', url: draft.value.url.trim().replace(/\/$/, ''), apiKey: draft.value.apiKey.trim(), supportsToolCall: true, supportsImages: true, supportsReasoning: true, useCustomProtocol: false
-    }]
+    draft.value.models = [...current, withWorkBuddyDefaults({ id, name: id, vendor: 'Custom' }, draft.value)]
   }
   manualModelId.value = ''
   if (selectedChannel.value) {
@@ -244,7 +267,8 @@ const commitChannel = () => {
   const existing = channels.value.find((channel) => channel.id === id)
   if (selectedChannel.value) {
     const index = channels.value.findIndex((channel) => channel.id === selectedChannel.value.id)
-    channels.value[index] = { ...selectedChannel.value, label: draft.value.label.trim() || `渠道 ${index + 1}`, url, apiKey: draft.value.apiKey.trim(), models: draft.value.models }
+    const apiKey = draft.value.apiKey.trim()
+    channels.value[index] = { ...selectedChannel.value, label: draft.value.label.trim() || `渠道 ${index + 1}`, url, apiKey, models: draft.value.models.map((model) => withWorkBuddyDefaults({ ...model, url, apiKey }, { url, apiKey })) }
     selectedChannelId.value = channels.value[index].id
   } else if (existing) {
     if (draft.value.models?.length) {
@@ -255,7 +279,7 @@ const commitChannel = () => {
     selectedChannelId.value = existing.id
     syncDraft(existing)
   } else {
-    const channel = { id, label: draft.value.label.trim() || `渠道 ${channels.value.length + 1}`, url, apiKey: draft.value.apiKey.trim(), models: draft.value.models || [] }
+    const channel = { id, label: draft.value.label.trim() || `渠道 ${channels.value.length + 1}`, url, apiKey: draft.value.apiKey.trim(), models: (draft.value.models || []).map((model) => withWorkBuddyDefaults(model, { url, apiKey: draft.value.apiKey.trim() })) }
     channels.value.push(channel)
     selectedChannelId.value = channel.id
     const next = new Set(selectedKeys.value)
@@ -272,9 +296,14 @@ const probeModels = async () => {
   try {
     const found = await invoke('workbuddy_fetch_models', { url: draft.value.url, apiKey: draft.value.apiKey })
     const existing = new Map((draft.value.models || []).map((model) => [model.id, model]))
-    draft.value.models = (found || []).map((item) => existing.get(item.id) || {
-      id: item.id, name: item.name || item.id, vendor: item.vendor || 'Custom', url: draft.value.url.trim().replace(/\/$/, ''), apiKey: draft.value.apiKey.trim(), supportsToolCall: true, supportsImages: true, supportsReasoning: true, useCustomProtocol: false
-    })
+    draft.value.models = (found || []).map((item) => withWorkBuddyDefaults({
+      ...(existing.get(item.id) || {}),
+      id: item.id,
+      name: existing.get(item.id)?.name || item.name || item.id,
+      vendor: existing.get(item.id)?.vendor || item.vendor || 'Custom',
+      url: draft.value.url.trim().replace(/\/$/, ''),
+      apiKey: draft.value.apiKey.trim()
+    }, draft.value))
     commitChannel()
   } catch (e) {
     error.value = e?.message || String(e)
@@ -314,7 +343,11 @@ const saveModels = async () => {
   error.value = ''
   try {
     const byId = new Map()
-    selectedModels.value.forEach(({ model }) => byId.set(model.id, model))
+    selectedModels.value.forEach(({ model, channel }) => byId.set(model.id, withWorkBuddyDefaults({
+      ...model,
+      url: channel.url,
+      apiKey: channel.apiKey
+    }, channel)))
     await invoke('workbuddy_save_config', { models: [...byId.values()] })
     window.$notify?.success('WorkBuddy 模型配置已保存')
   } catch (e) {

@@ -46,6 +46,101 @@ fn models_endpoint(url: &str) -> String {
     format!("{}/models", normalized)
 }
 
+fn with_default_fields(mut model: Value) -> Value {
+    let Some(object) = model.as_object_mut() else {
+        return model;
+    };
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !object
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        object.insert("name".to_string(), Value::String(id));
+    }
+    if !object
+        .get("vendor")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        object.insert("vendor".to_string(), Value::String("Custom".to_string()));
+    }
+    object
+        .entry("url")
+        .or_insert_with(|| Value::String(String::new()));
+    object
+        .entry("apiKey")
+        .or_insert_with(|| Value::String(String::new()));
+    if !object.get("supportsImages").is_some_and(Value::is_boolean) {
+        object.insert("supportsImages".to_string(), Value::Bool(true));
+    }
+    if !object
+        .get("supportsReasoning")
+        .is_some_and(Value::is_boolean)
+    {
+        object.insert("supportsReasoning".to_string(), Value::Bool(true));
+    }
+    if !object
+        .get("supportsToolCall")
+        .is_some_and(Value::is_boolean)
+    {
+        object.insert("supportsToolCall".to_string(), Value::Bool(true));
+    }
+    if !object
+        .get("useCustomProtocol")
+        .is_some_and(Value::is_boolean)
+    {
+        object.insert("useCustomProtocol".to_string(), Value::Bool(false));
+    }
+    if !object.get("onlyReasoning").is_some_and(Value::is_boolean) {
+        object.insert("onlyReasoning".to_string(), Value::Bool(true));
+    }
+
+    let reasoning = object
+        .entry("reasoning")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !reasoning.is_object() {
+        *reasoning = Value::Object(serde_json::Map::new());
+    }
+    let reasoning = reasoning.as_object_mut().expect("reasoning was normalized");
+    if !reasoning
+        .get("defaultEffort")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        reasoning.insert(
+            "defaultEffort".to_string(),
+            Value::String("high".to_string()),
+        );
+    }
+    if !reasoning
+        .get("supportedEfforts")
+        .and_then(Value::as_array)
+        .is_some_and(|values| !values.is_empty())
+    {
+        reasoning.insert(
+            "supportedEfforts".to_string(),
+            Value::Array(
+                ["high", "low", "medium", "xhigh", "max"]
+                    .into_iter()
+                    .map(|effort| Value::String(effort.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if !reasoning
+        .get("canDisableThinking")
+        .is_some_and(Value::is_boolean)
+    {
+        reasoning.insert("canDisableThinking".to_string(), Value::Bool(false));
+    }
+    model
+}
+
 #[tauri::command]
 pub async fn workbuddy_get_config() -> Result<WorkBuddyConfig, String> {
     let path = config_path()?;
@@ -68,6 +163,7 @@ pub async fn workbuddy_get_config() -> Result<WorkBuddyConfig, String> {
 
 #[tauri::command]
 pub async fn workbuddy_save_config(models: Vec<Value>) -> Result<WorkBuddyConfig, String> {
+    let models: Vec<Value> = models.into_iter().map(with_default_fields).collect();
     let path = config_path()?;
     let parent = path
         .parent()
