@@ -181,12 +181,14 @@ import { computed, onActivated, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useGatewayStore } from '../../stores/gateway'
 import { useGatewayPricing } from '../../composables/useGatewayPricing'
+import { useLocalDayBoundary } from '../../composables/useLocalDayBoundary'
 import FloatingDropdown from '../common/FloatingDropdown.vue'
 import Pagination from '../common/Pagination.vue'
 
 const { t } = useI18n()
 const store = useGatewayStore()
 const { hasPrice } = useGatewayPricing()
+const localDayStart = useLocalDayBoundary()
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200]
 const pageSize = ref(20)
@@ -269,9 +271,7 @@ const inRange = (ts, range) => {
   const now = Date.now()
   const day = 24 * 60 * 60 * 1000
   if (range === 'today') {
-    const d = new Date()
-    d.setHours(0, 0, 0, 0)
-    return ts >= d.getTime()
+    return ts >= localDayStart.value
   }
   if (range === '7d') return ts >= now - 7 * day
   if (range === '30d') return ts >= now - 30 * day

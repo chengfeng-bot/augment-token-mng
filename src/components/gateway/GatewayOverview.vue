@@ -130,6 +130,7 @@ import { computed, onActivated, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useGatewayStore } from '../../stores/gateway'
 import { useGatewayPricing } from '../../composables/useGatewayPricing'
+import { useLocalDayBoundary } from '../../composables/useLocalDayBoundary'
 import BaseModal from '../common/BaseModal.vue'
 import ConnectionDialog from './ConnectionDialog.vue'
 import GatewayTrendChart from './GatewayTrendChart.vue'
@@ -138,6 +139,7 @@ import GatewayShareChart from './GatewayShareChart.vue'
 const { t } = useI18n()
 const store = useGatewayStore()
 const { hasPrice, recordCost } = useGatewayPricing()
+const localDayStart = useLocalDayBoundary()
 const showConnection = ref(false)
 const showRoutableModels = ref(false)
 
@@ -202,10 +204,7 @@ const stats = computed(() => {
   const partial = list.some((u) => u.status !== 'error' && !hasPrice(u.model))
   const prompt = list.reduce((sum, u) => sum + (u.promptTokens || 0), 0)
   const cached = list.reduce((sum, u) => sum + (u.cachedTokens || 0), 0)
-  const dayStart = new Date()
-  dayStart.setHours(0, 0, 0, 0)
-  const startTs = dayStart.getTime()
-  const todayList = list.filter((u) => (u.createdAt || 0) >= startTs)
+  const todayList = list.filter((u) => (u.createdAt || 0) >= localDayStart.value)
   const todayTokens = todayList.reduce((sum, u) => sum + (u.promptTokens || 0) + (u.completionTokens || 0), 0)
   const todayCost = todayList.reduce((sum, u) => sum + recordCost(u), 0)
   return {

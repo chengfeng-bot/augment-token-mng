@@ -187,12 +187,14 @@ import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useGatewayStore } from '../../stores/gateway'
 import { useGatewayPricing } from '../../composables/useGatewayPricing'
+import { useLocalDayBoundary } from '../../composables/useLocalDayBoundary'
 import ChannelDialog from './ChannelDialog.vue'
 import RoutePreviewDialog from './RoutePreviewDialog.vue'
 
 const { t } = useI18n()
 const store = useGatewayStore()
 const { recordCost } = useGatewayPricing()
+const localDayStart = useLocalDayBoundary()
 
 const showDialog = ref(false)
 const showRoutePreview = ref(false)
@@ -229,9 +231,6 @@ const statsMap = computed(() => {
     if (!u.channelId) continue
     ;(byChannel[u.channelId] ||= []).push(u)
   }
-  const dayStart = new Date()
-  dayStart.setHours(0, 0, 0, 0)
-  const startTs = dayStart.getTime()
   const tokensOf = (u) => (u.promptTokens || 0) + (u.completionTokens || 0)
   const out = {}
   for (const c of store.channels) {
@@ -244,7 +243,7 @@ const statsMap = computed(() => {
     const lastError = recent.find((u) => u.status === 'error') || null
     const totalTokens = list.reduce((sum, u) => sum + tokensOf(u), 0)
     const totalCost = list.reduce((sum, u) => sum + recordCost(u), 0)
-    const todayList = list.filter((u) => (u.createdAt || 0) >= startTs)
+    const todayList = list.filter((u) => (u.createdAt || 0) >= localDayStart.value)
     const todayTokens = todayList.reduce((sum, u) => sum + tokensOf(u), 0)
     const todayCost = todayList.reduce((sum, u) => sum + recordCost(u), 0)
     out[c.id] = {
