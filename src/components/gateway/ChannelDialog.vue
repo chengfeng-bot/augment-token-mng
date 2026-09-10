@@ -35,14 +35,42 @@
               </button>
             </template>
             <template #default="{ close }">
-              <button
-                v-for="acc in accounts"
-                :key="acc.id"
-                type="button"
-                class="dropdown-item"
-                :class="{ 'dropdown-item--active': acc.id === form.accountId }"
-                @click="selectAccount(acc.id, close)"
-              >{{ acc.label }}</button>
+              <div class="py-1">
+                <div class="px-2 pb-1" @click.stop>
+                  <div class="relative flex items-center">
+                    <input
+                      v-model="accountSearch"
+                      class="input h-8 w-full pr-7 text-[12px]"
+                      :placeholder="$t('common.search')"
+                    />
+                    <button
+                      v-if="accountSearch"
+                      type="button"
+                      class="absolute right-1.5 rounded p-0.5 text-text-muted transition-colors hover:text-text"
+                      @click="accountSearch = ''"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="max-h-[240px] overflow-y-auto overscroll-contain">
+                  <button
+                    v-for="acc in filteredAccounts"
+                    :key="acc.id"
+                    type="button"
+                    class="dropdown-item"
+                    :class="{ 'dropdown-item--active': acc.id === form.accountId }"
+                    @click="selectAccount(acc.id, close)"
+                  >
+                    <span class="truncate">{{ acc.label }}</span>
+                  </button>
+                  <div v-if="!filteredAccounts.length" class="px-3 py-3 text-center text-[12px] text-text-muted">
+                    {{ $t('platform.openai.codexDialog.noMatchingAccounts') }}
+                  </div>
+                </div>
+              </div>
             </template>
           </FloatingDropdown>
           <p v-if="!accounts.length" class="text-meta mt-1">{{ $t('gateway.channels.noAccounts') }}</p>
@@ -283,6 +311,7 @@ const blank = () => ({ id: '', name: '', kind: 'codex_oauth', accountId: '', bas
 const form = reactive(blank())
 const activeProvider = ref('codex_oauth')
 const modelInput = ref('')
+const accountSearch = ref('')
 const providerDrafts = ref({})
 const showApiKey = ref(false)
 
@@ -337,6 +366,7 @@ const applyChannelFields = (draft) => {
 
 const clearTransientState = () => {
   modelInput.value = ''
+  accountSearch.value = ''
   fetchedModels.value = []
   fetchMsg.value = null
   testMsg.value = null
@@ -506,9 +536,17 @@ const basePlaceholder = computed(() =>
   form.kind === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'
 )
 const selectedAccountLabel = computed(() => props.accounts.find((a) => a.id === form.accountId)?.label || '')
+const filteredAccounts = computed(() => {
+  const query = accountSearch.value.trim().toLowerCase()
+  if (!query) return props.accounts
+  return props.accounts.filter((account) =>
+    `${account.label || ''} ${account.id || ''}`.toLowerCase().includes(query)
+  )
+})
 
 const selectAccount = (id, close) => {
   form.accountId = id
+  accountSearch.value = ''
   close?.()
 }
 
