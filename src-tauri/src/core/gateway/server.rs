@@ -260,13 +260,13 @@ async fn handle(
             } else {
                 body.clone()
             };
-            executor.send(channel, out_body).await
+            executor.send(channel, out_body, &headers).await
         } else if rewrite {
             let mut req = canonical.clone();
             req.model = upstream_model.clone();
-            executor.send_canonical(channel, &req).await
+            executor.send_canonical(channel, &req, &headers).await
         } else {
-            executor.send_canonical(channel, &canonical).await
+            executor.send_canonical(channel, &canonical, &headers).await
         };
 
         let resp = match send_result {
@@ -442,14 +442,30 @@ fn record_usage(state: &AppState, rec: UsageRecord) {
     }
 }
 
-/// 从响应体提取错误消息（兼容 `error.message` 与扁平 `message`）
+/// 从结构化或纯文本响应体提取可读错误消息。
 fn extract_error_message(bytes: &[u8]) -> Option<String> {
-    let v: Value = serde_json::from_slice(bytes).ok()?;
-    v.get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .or_else(|| v.get("message").and_then(|m| m.as_str()))
-        .map(|s| s.to_string())
+    if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+        let message = v
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .or_else(|| v.pointer("/response/error/message").and_then(Value::as_str))
+            .or_else(|| v.get("error").and_then(Value::as_str))
+            .or_else(|| v.get("message").and_then(Value::as_str))
+            .or_else(|| v.get("detail").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|message| !message.is_empty());
+        if let Some(message) = message {
+            return Some(message.to_string());
+        }
+    }
+
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(300).collect())
+    }
 }
 
 /// 构造缓冲（非流式）响应
@@ -811,4 +827,39 @@ fn extract_completed_response(sse_text: &str) -> Option<Value> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_error_message;
+
+    #[test]
+    fn extract_error_message_supports_gateway_upstream_shapes() {
+        let cases: &[(&[u8], &str)] = &[
+            (br#"{"error":{"message":"nested error"}}"#, "nested error"),
+            (
+                br#"{"response":{"error":{"message":"stream error"}}}"#,
+                "stream error",
+            ),
+            (br#"{"error":"string error"}"#, "string error"),
+            (br#"{"message":"flat error"}"#, "flat error"),
+            (
+                br#"{"detail":"Unsupported parameter: context_management"}"#,
+                "Unsupported parameter: context_management",
+            ),
+            (b"plain upstream error", "plain upstream error"),
+        ];
+
+        for (body, expected) in cases {
+            assert_eq!(extract_error_message(body).as_deref(), Some(*expected));
+        }
+        assert_eq!(extract_error_message(b"  "), None);
+    }
+
+    #[test]
+    fn extract_error_message_truncates_plain_text() {
+        let body = vec![b'x'; 400];
+
+        assert_eq!(extract_error_message(&body).unwrap().chars().count(), 300);
+    }
 }

@@ -20,6 +20,35 @@ use crate::platforms::openai::codex::upstream::{
 use crate::platforms::openai::models::Account;
 use crate::proxy_helper::ProxyClient;
 
+/// 允许从网关入站请求传递到 Codex 上游的会话/客户端元数据头。
+const CODEX_FORWARDED_HEADERS: [&str; 8] = [
+    "version",
+    "x-codex-beta-features",
+    "x-codex-turn-metadata",
+    "x-client-request-id",
+    "x-codex-window-id",
+    "thread-id",
+    "session-id",
+    "x-openai-internal-codex-responses-lite",
+];
+
+/// ChatGPT Codex Responses 上游不接受或不适用于 OAuth 后端的顶层字段。
+const CODEX_UNSUPPORTED_FIELDS: [&str; 13] = [
+    "max_output_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "truncation",
+    "prompt_cache_options",
+    "prompt_cache_retention",
+    "context_management",
+    "user",
+    "safety_identifier",
+    "previous_response_id",
+    "generate",
+    "stream_options",
+];
+
 /// 渠道执行错误
 #[derive(Debug)]
 pub enum GatewayError {
@@ -55,13 +84,14 @@ impl GatewayExecutor {
         &self,
         channel: &GatewayChannel,
         req: &CanonicalRequest,
+        headers: &HeaderMap,
     ) -> Result<reqwest::Response, GatewayError> {
         let body = outbound_for(channel.wire()).build_request(req);
         let bytes = Bytes::from(
             serde_json::to_vec(&body)
                 .map_err(|e| GatewayError::Credential(format!("渠道请求体序列化失败: {}", e)))?,
         );
-        self.send(channel, bytes).await
+        self.send(channel, bytes, headers).await
     }
 
     /// 将已序列化的渠道请求体发往指定渠道，返回上游响应（含非成功状态码，交由路由层判定）
@@ -69,9 +99,10 @@ impl GatewayExecutor {
         &self,
         channel: &GatewayChannel,
         body: Bytes,
+        headers: &HeaderMap,
     ) -> Result<reqwest::Response, GatewayError> {
         match channel.kind {
-            ChannelKind::CodexOauth => self.send_codex(channel, body).await,
+            ChannelKind::CodexOauth => self.send_codex(channel, body, headers).await,
             ChannelKind::OpenaiCompat => self.send_openai_compat(channel, body).await,
             ChannelKind::Anthropic => self.send_anthropic(channel, body).await,
         }
@@ -82,6 +113,7 @@ impl GatewayExecutor {
         &self,
         channel: &GatewayChannel,
         body: Bytes,
+        headers: &HeaderMap,
     ) -> Result<reqwest::Response, GatewayError> {
         let account_id = channel
             .account_id
@@ -106,10 +138,11 @@ impl GatewayExecutor {
             .ok_or_else(|| GatewayError::Credential("OAuth 账号缺少 token".into()))?;
 
         let url = build_upstream_url(CODEX_UPSTREAM_ORIGIN, "/backend-api/codex/responses", None);
-        // 规整为 codex 后端可接受的 Responses 请求体（input 数组化 / 补 instructions / stream=true）
+        // 统一规整为 ChatGPT Codex OAuth 后端可接受的 Responses 请求体。
         let body = normalize_codex_body(body);
+        let headers = select_codex_headers(headers);
         let response = self
-            .send_codex_once(&url, body.clone(), &resolved.account)
+            .send_codex_once(&url, body.clone(), &headers, &resolved.account)
             .await?;
         if response.status() != reqwest::StatusCode::UNAUTHORIZED {
             self.persist_codex_forbidden(&coordinator, account_id, response.status())
@@ -124,7 +157,9 @@ impl GatewayExecutor {
             Ok(resolution) => resolution,
             Err(_) => return Ok(response),
         };
-        let response = self.send_codex_once(&url, body, &refreshed.account).await?;
+        let response = self
+            .send_codex_once(&url, body, &headers, &refreshed.account)
+            .await?;
         self.persist_codex_forbidden(&coordinator, account_id, response.status())
             .await;
         Ok(response)
@@ -134,6 +169,7 @@ impl GatewayExecutor {
         &self,
         url: &str,
         body: Bytes,
+        headers: &HeaderMap,
         account: &Account,
     ) -> Result<reqwest::Response, GatewayError> {
         let access_token = account
@@ -146,10 +182,10 @@ impl GatewayExecutor {
             .as_deref()
             .unwrap_or(account.email.as_str());
         let builder = self.client.request(Method::POST, url);
-        let builder =
-            apply_forward_headers(builder, &HeaderMap::new(), access_token, chatgpt_account_id)
-                .header("Content-Type", "application/json")
-                .body(body);
+        let builder = apply_forward_headers(builder, headers, access_token, chatgpt_account_id)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .body(body);
         send_builder(builder).await
     }
 
@@ -303,8 +339,18 @@ fn normalize_openai_compat_body(channel: &GatewayChannel, body: Bytes) -> Bytes 
     serde_json::to_vec(&root).map(Bytes::from).unwrap_or(body)
 }
 
-/// 规整 Responses 请求体以兼容 ChatGPT Codex 后端（与 codex 透传一致）：
-/// 字符串 `input` → 消息数组、剔除账号绑定的 `reasoning` 项、补缺省 `instructions`、强制 `stream=true`。
+/// 仅保留允许透传给 Codex 上游的会话/客户端元数据头。
+fn select_codex_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut selected = HeaderMap::new();
+    for name in CODEX_FORWARDED_HEADERS {
+        if let Some(value) = headers.get(name) {
+            selected.insert(name, value.clone());
+        }
+    }
+    selected
+}
+
+/// 规整 Responses 请求体以兼容 ChatGPT Codex OAuth 后端。
 fn normalize_codex_body(body: Bytes) -> Bytes {
     let Ok(mut root) = serde_json::from_slice::<Value>(&body) else {
         return body;
@@ -326,13 +372,139 @@ fn normalize_codex_body(body: Bytes) -> Bytes {
     // 把别处的 encrypted_content 透传给 codex 上游会解密校验失败（encrypted content could not be verified）
     if let Some(Value::Array(items)) = obj.get_mut("input") {
         items.retain(|item| item.get("type").and_then(|t| t.as_str()) != Some("reasoning"));
+        for item in items {
+            let Some(item_obj) = item.as_object_mut() else {
+                continue;
+            };
+            if item_obj.get("role").and_then(|v| v.as_str()) == Some("system") {
+                item_obj.insert("role".to_string(), json!("developer"));
+            }
+            if let Some(Value::Array(parts)) = item_obj.get_mut("content") {
+                for part in parts {
+                    if let Some(part_obj) = part.as_object_mut() {
+                        part_obj.remove("prompt_cache_breakpoint");
+                    }
+                }
+            }
+        }
     }
-    if !obj.contains_key("instructions") {
+    for field in CODEX_UNSUPPORTED_FIELDS {
+        obj.remove(field);
+    }
+    if obj.get("instructions").is_none_or(Value::is_null) {
         obj.insert(
             "instructions".to_string(),
             json!("You are a helpful assistant."),
         );
     }
     obj.insert("stream".to_string(), json!(true));
+    obj.insert("store".to_string(), json!(false));
+    obj.insert(
+        "include".to_string(),
+        json!(["reasoning.encrypted_content"]),
+    );
+    let has_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if has_tools {
+        obj.insert("parallel_tool_calls".to_string(), json!(true));
+    } else {
+        obj.remove("parallel_tool_calls");
+    }
     serde_json::to_vec(&root).map(Bytes::from).unwrap_or(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use warp::http::HeaderValue;
+
+    #[test]
+    fn normalize_codex_body_applies_oauth_compatibility() {
+        let body = Bytes::from_static(
+            br#"{
+                "model":"gpt-5.6-sol",
+                "stream":false,
+                "store":true,
+                "instructions":null,
+                "max_output_tokens":4096,
+                "max_completion_tokens":4096,
+                "temperature":0.2,
+                "top_p":0.9,
+                "truncation":"auto",
+                "prompt_cache_options":{"mode":"implicit"},
+                "prompt_cache_retention":"24h",
+                "context_management":[{"type":"compaction"}],
+                "user":"owner",
+                "safety_identifier":"safe",
+                "previous_response_id":"resp_old",
+                "generate":true,
+                "stream_options":{"include_usage":true},
+                "parallel_tool_calls":false,
+                "tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],
+                "input":[
+                    {"type":"reasoning","encrypted_content":"bound"},
+                    {"type":"message","role":"system","content":[
+                        {"type":"input_text","text":"rules","prompt_cache_breakpoint":{"type":"ephemeral"}}
+                    ]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+                ]
+            }"#,
+        );
+
+        let normalized = normalize_codex_body(body);
+        let value: Value = serde_json::from_slice(&normalized).unwrap();
+
+        assert_eq!(value["stream"], json!(true));
+        assert_eq!(value["store"], json!(false));
+        assert_eq!(value["parallel_tool_calls"], json!(true));
+        assert_eq!(value["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(value["instructions"], json!("You are a helpful assistant."));
+        assert_eq!(value["input"].as_array().unwrap().len(), 2);
+        assert_eq!(value["input"][0]["role"], json!("developer"));
+        assert!(
+            value["input"][0]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
+        for field in CODEX_UNSUPPORTED_FIELDS {
+            assert!(value.get(field).is_none(), "{field} should be removed");
+        }
+    }
+
+    #[test]
+    fn normalize_codex_body_arrayizes_input_and_drops_parallel_without_tools() {
+        let body = Bytes::from_static(
+            br#"{"model":"gpt-5.6-sol","input":"hello","parallel_tool_calls":true}"#,
+        );
+
+        let normalized = normalize_codex_body(body);
+        let value: Value = serde_json::from_slice(&normalized).unwrap();
+
+        assert_eq!(value["input"][0]["role"], json!("user"));
+        assert_eq!(value["input"][0]["content"][0]["text"], json!("hello"));
+        assert!(value.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn select_codex_headers_uses_allowlist() {
+        let mut headers = HeaderMap::new();
+        headers.insert("session-id", HeaderValue::from_static("session-1"));
+        headers.insert("x-codex-turn-metadata", HeaderValue::from_static("turn-1"));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer gateway-key"),
+        );
+        headers.insert("x-api-key", HeaderValue::from_static("gateway-key"));
+        headers.insert("x-unrelated", HeaderValue::from_static("drop-me"));
+
+        let selected = select_codex_headers(&headers);
+
+        assert_eq!(selected.get("session-id").unwrap(), "session-1");
+        assert_eq!(selected.get("x-codex-turn-metadata").unwrap(), "turn-1");
+        assert!(selected.get("authorization").is_none());
+        assert!(selected.get("x-api-key").is_none());
+        assert!(selected.get("x-unrelated").is_none());
+    }
 }
