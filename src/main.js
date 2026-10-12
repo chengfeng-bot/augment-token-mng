@@ -2,8 +2,22 @@ import { createApp } from "vue"
 import { createPinia } from "pinia"
 import "./style.css"
 import App from "./App.vue"
+import InternalBrowser from "./components/browser/InternalBrowser.vue"
 import i18n from "./locales"
 import { tooltip } from "./directives/tooltip"
+import { invoke } from '@tauri-apps/api/core'
+import { handleExternalLinkClick } from './utils/externalLinks'
+
+const openExternalLink = (event) => handleExternalLinkClick(
+  event,
+  url => invoke('open_url', { url }),
+  error => {
+    console.error('Failed to open external link:', error)
+    window.$notify?.error(i18n.global.t('messages.openUrlFailed'))
+  }
+)
+window.addEventListener('click', openExternalLink)
+if (import.meta.hot) import.meta.hot.dispose(() => window.removeEventListener('click', openExternalLink))
 
 const THEME_STORAGE_KEY = "atm-theme"
 const prefersDarkMedia = window.matchMedia("(prefers-color-scheme: dark)")
@@ -47,7 +61,8 @@ const themeManager = {
 }
 
 const pinia = createPinia()
-const app = createApp(App)
+const root = new URLSearchParams(window.location.search).get('window') === 'browser' ? InternalBrowser : App
+const app = createApp(root)
 app.use(pinia)
 app.use(i18n)
 app.directive('tooltip', tooltip)

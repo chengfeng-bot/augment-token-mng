@@ -22,6 +22,7 @@ pub mod core {
     pub mod gateway_custom_models;
     pub mod gateway_models;
     pub mod http_client;
+    pub mod internal_browser;
     pub mod path_manager;
     pub mod proxy_config;
     pub mod proxy_helper;
@@ -170,8 +171,7 @@ pub fn run() {
     }
 
     builder
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -773,7 +773,9 @@ pub fn run() {
             core::app_commands::create_jetbrains_token_file,
             core::app_commands::configure_vim_augment,
             core::app_commands::configure_auggie,
-            core::app_commands::open_internal_browser,
+            core::internal_browser::open_internal_browser,
+            core::internal_browser::internal_browser_state,
+            core::internal_browser::internal_browser_action,
             core::app_commands::check_for_updates,
             core::app_commands::copy_to_clipboard,
 
@@ -906,6 +908,8 @@ pub fn run() {
 
             // Spotlight 快捷搜索命令
             crate::core::spotlight::toggle_spotlight,
+            crate::core::spotlight::hide_spotlight,
+            crate::core::spotlight::spotlight_ready,
             crate::core::spotlight::register_spotlight_shortcut,
             crate::core::spotlight::unregister_spotlight_shortcut,
             crate::core::spotlight::is_spotlight_shortcut_registered,
