@@ -266,6 +266,7 @@ const formattedExpiryDate = computed(() => {
   if (!props.subscription.expiry_date) return $t('subscriptions.noExpiry')
   const date = new Date(props.subscription.expiry_date)
   return date.toLocaleDateString(dateLocale.value, {
+    timeZone: 'UTC',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'

@@ -361,7 +361,7 @@ const formatDateForInput = (timestamp) => {
 // 将日期字符串转换为时间戳
 const dateToTimestamp = (dateStr) => {
   if (!dateStr) return null
-  const date = new Date(dateStr)
+  const date = new Date(`${dateStr}T00:00:00`)
   return Math.floor(date.getTime() / 1000)
 }
 
@@ -405,16 +405,16 @@ const calculateExpiryDate = () => {
 
     switch (formData.value.duration_unit) {
       case 'days':
-        startDate.setDate(startDate.getDate() + value)
+        startDate.setUTCDate(startDate.getUTCDate() + value)
         break
       case 'weeks':
-        startDate.setDate(startDate.getDate() + (value * 7))
+        startDate.setUTCDate(startDate.getUTCDate() + (value * 7))
         break
       case 'months':
-        startDate.setMonth(startDate.getMonth() + value)
+        startDate.setUTCMonth(startDate.getUTCMonth() + value)
         break
       case 'years':
-        startDate.setFullYear(startDate.getFullYear() + value)
+        startDate.setUTCFullYear(startDate.getUTCFullYear() + value)
         break
     }
 
