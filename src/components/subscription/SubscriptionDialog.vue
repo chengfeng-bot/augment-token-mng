@@ -240,9 +240,9 @@ const formatDateForInput = (dateStr) => {
   try {
     const date = new Date(dateStr)
     if (isNaN(date.getTime())) return ''
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
+    const year = date.getUTCFullYear()
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+    const day = String(date.getUTCDate()).padStart(2, '0')
     return `${year}-${month}-${day}`
   } catch {
     return ''
@@ -271,16 +271,16 @@ const calculateExpiryDate = () => {
 
     switch (formData.value.duration_unit) {
       case 'days':
-        startDate.setDate(startDate.getDate() + value)
+        startDate.setUTCDate(startDate.getUTCDate() + value)
         break
       case 'weeks':
-        startDate.setDate(startDate.getDate() + (value * 7))
+        startDate.setUTCDate(startDate.getUTCDate() + (value * 7))
         break
       case 'months':
-        startDate.setMonth(startDate.getMonth() + value)
+        startDate.setUTCMonth(startDate.getUTCMonth() + value)
         break
       case 'years':
-        startDate.setFullYear(startDate.getFullYear() + value)
+        startDate.setUTCFullYear(startDate.getUTCFullYear() + value)
         break
     }
 
