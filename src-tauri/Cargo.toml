@@ -10,10 +10,10 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
-tauri = { version = "~2.9", features = ["tray-icon", "unstable"] }
+tauri = { version = "~2.12", features = ["tray-icon", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2.0"
@@ -82,7 +82,7 @@ secret-service = { version = "4.0", features = ["rt-tokio-crypto-rust"] }
 
 # Windows DPAPI
 [target.'cfg(windows)'.dependencies]
-webview2-com = "=0.38.2"
+webview2-com = "=0.39.1"
 windows = { version = "0.58", features = ["Win32_Security_Cryptography", "Win32_System_Registry", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.52"
 

@@ -76,7 +76,7 @@ pub(super) fn install(app: &AppHandle, label: &str, window: &WebviewWindow) -> R
             let _ = tx.send(result);
         })
         .map_err(|e| e.to_string())?;
-    // Browser creation runs on a worker, including Tauri's Windows popup callback.
+    // with_webview runs inline for UI-thread popups and queues work for background opens.
     rx.recv_timeout(Duration::from_secs(10))
         .map_err(|e| e.to_string())?
 }
