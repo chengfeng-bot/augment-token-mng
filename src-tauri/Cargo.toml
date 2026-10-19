@@ -78,6 +78,8 @@ security-framework = "2.9"
 
 # Linux Secret Service
 [target.'cfg(target_os = "linux")'.dependencies]
+# deep-link 2.6.2 needs the two-field ParseOption; remove after upgrading to a release with upstream #3711.
+rust-ini = "=0.21.1"
 secret-service = { version = "4.0", features = ["rt-tokio-crypto-rust"] }
 
 # Windows DPAPI
