@@ -4,10 +4,66 @@ use crate::cursor::models::{Account, MachineInfo, TokenData};
 use crate::cursor::modules::{auth, db, machine, process, storage};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Window};
+use tauri_plugin_opener::OpenerExt;
 
-/// 从 JWT token 中解析 exp 字段（过期时间戳）
-fn parse_jwt_exp(token: &str) -> Option<i64> {
+const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+static BROWSER_LOGINS: LazyLock<Mutex<HashMap<String, PendingBrowserLogin>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct PendingBrowserLogin {
+    window_label: String,
+    started_at: Instant,
+    session_token: String,
+    user_info: auth::CursorUserInfo,
+    expected_user_id: String,
+    authorization: auth::BrowserAuthorization,
+    tokens: Option<auth::AccessTokenResponse>,
+}
+
+#[derive(Serialize)]
+pub struct CursorBrowserLogin {
+    login_id: String,
+    email: String,
+    expires_in_seconds: u64,
+}
+
+fn with_browser_login<T>(
+    window: &Window,
+    login_id: &str,
+    action: impl FnOnce(&mut PendingBrowserLogin) -> T,
+) -> Result<T, String> {
+    let mut logins = BROWSER_LOGINS.lock().map_err(|_| "CURSOR_AUTH_FAILED")?;
+    logins.retain(|_, login| login.started_at.elapsed() < BROWSER_LOGIN_TIMEOUT);
+    let login = logins
+        .get_mut(login_id)
+        .filter(|login| login.window_label == window.label())
+        .ok_or("CURSOR_AUTH_EXPIRED")?;
+    Ok(action(login))
+}
+
+fn canonical_user_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "unknown" {
+        return None;
+    }
+    let id = value.rsplit('|').next()?;
+    Some(if id.starts_with("user_") { id } else { value }.to_string())
+}
+
+fn token_user_id(token: &str) -> Option<String> {
+    let decoded = urlencoding::decode(token).ok()?;
+    let jwt = decoded.rsplit("::").next()?;
+    let claims = parse_jwt_claims(jwt)?;
+    canonical_user_id(claims.get("sub")?.as_str()?)
+}
+
+fn parse_jwt_claims(token: &str) -> Option<serde_json::Value> {
     // JWT 格式: header.payload.signature
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -16,11 +72,12 @@ fn parse_jwt_exp(token: &str) -> Option<i64> {
 
     // 解码 payload (第二部分)
     let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
-    let payload_str = String::from_utf8(payload).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
 
-    // 解析 JSON 并提取 exp 字段
-    let json: serde_json::Value = serde_json::from_str(&payload_str).ok()?;
-    json.get("exp")?.as_i64()
+/// 从 JWT token 中解析 exp 字段（过期时间戳）
+fn parse_jwt_exp(token: &str) -> Option<i64> {
+    parse_jwt_claims(token)?.get("exp")?.as_i64()
 }
 
 /// 从 session token 中解析 exp 字段
@@ -316,84 +373,214 @@ pub async fn cursor_get_user_info_from_session(
     auth::get_user_info(&session_token).await
 }
 
+#[tauri::command]
+pub async fn cursor_begin_browser_login(
+    window: Window,
+    session_token: String,
+) -> Result<CursorBrowserLogin, String> {
+    let session_token = session_token.trim().to_string();
+    if session_token.is_empty() {
+        return Err("CURSOR_AUTH_SESSION_CHECK_FAILED".into());
+    }
+    let user_info = auth::get_user_info(&session_token)
+        .await
+        .map_err(|_| "CURSOR_AUTH_SESSION_CHECK_FAILED")?;
+    if user_info.email.trim().is_empty() {
+        return Err("CURSOR_AUTH_IDENTITY_UNAVAILABLE".into());
+    }
+    // The session was accepted by auth/me before its subject is used for account matching.
+    let expected_user_id = token_user_id(&session_token)
+        .or_else(|| canonical_user_id(&user_info.id))
+        .ok_or("CURSOR_AUTH_IDENTITY_UNAVAILABLE")?;
+    let authorization = auth::create_browser_authorization();
+    let login_id = authorization.uuid.clone();
+    let result = CursorBrowserLogin {
+        login_id: login_id.clone(),
+        email: user_info.email.clone(),
+        expires_in_seconds: BROWSER_LOGIN_TIMEOUT.as_secs(),
+    };
+    {
+        let mut logins = BROWSER_LOGINS.lock().map_err(|_| "CURSOR_AUTH_FAILED")?;
+        logins.retain(|_, login| login.started_at.elapsed() < BROWSER_LOGIN_TIMEOUT);
+        if logins.len() >= 16 {
+            return Err("CURSOR_AUTH_BUSY".into());
+        }
+        logins.insert(
+            login_id.clone(),
+            PendingBrowserLogin {
+                window_label: window.label().to_string(),
+                started_at: Instant::now(),
+                session_token,
+                user_info,
+                expected_user_id,
+                authorization,
+                tokens: None,
+            },
+        );
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(BROWSER_LOGIN_TIMEOUT).await;
+        if let Ok(mut logins) = BROWSER_LOGINS.lock() {
+            logins.remove(&login_id);
+        }
+    });
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn cursor_open_browser_login(
+    app: AppHandle,
+    window: Window,
+    login_id: String,
+) -> Result<(), String> {
+    let url = with_browser_login(&window, &login_id, |login| login.authorization.url.clone())?;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| "CURSOR_AUTH_BROWSER_OPEN_FAILED".into())
+}
+
+#[tauri::command]
+pub async fn cursor_poll_browser_login(window: Window, login_id: String) -> Result<bool, String> {
+    let (uuid, verifier, expected_user_id, ready) =
+        with_browser_login(&window, &login_id, |login| {
+            (
+                login.authorization.uuid.clone(),
+                login.authorization.verifier.clone(),
+                login.expected_user_id.clone(),
+                login.tokens.is_some(),
+            )
+        })?;
+    if ready {
+        return Ok(true);
+    }
+    let tokens = auth::poll_browser_authorization(&uuid, &verifier).await?;
+    // Recheck after awaiting the request: cancel/expiry must never resurrect a login.
+    with_browser_login(&window, &login_id, |login| {
+        let Some(tokens) = tokens else {
+            return Ok(false);
+        };
+        let claims =
+            parse_jwt_claims(&tokens.access_token).ok_or("CURSOR_AUTH_INVALID_RESPONSE")?;
+        let user_id = claims
+            .get("sub")
+            .and_then(|value| value.as_str())
+            .and_then(canonical_user_id)
+            .ok_or("CURSOR_AUTH_INVALID_RESPONSE")?;
+        if user_id != expected_user_id {
+            return Err("CURSOR_AUTH_ACCOUNT_MISMATCH".to_string());
+        }
+        if claims.get("type").and_then(|value| value.as_str()) != Some("session")
+            || !claims
+                .get("exp")
+                .and_then(|value| value.as_i64())
+                .is_some_and(|expiry| expiry > chrono::Utc::now().timestamp())
+            || tokens
+                .refresh_token
+                .as_ref()
+                .is_none_or(|token| token.trim().is_empty())
+        {
+            return Err("CURSOR_AUTH_INVALID_RESPONSE".to_string());
+        }
+        login.tokens = Some(tokens);
+        Ok(true)
+    })?
+}
+
+#[tauri::command]
+pub fn cursor_cancel_browser_login(window: Window, login_id: String) -> Result<(), String> {
+    let mut logins = BROWSER_LOGINS.lock().map_err(|_| "CURSOR_AUTH_FAILED")?;
+    if logins
+        .get(&login_id)
+        .is_some_and(|login| login.window_label == window.label())
+    {
+        logins.remove(&login_id);
+    }
+    Ok(())
+}
+
+fn take_browser_login(
+    window: &Window,
+    login_id: &str,
+) -> Result<(PendingBrowserLogin, auth::AccessTokenResponse), String> {
+    let mut logins = BROWSER_LOGINS.lock().map_err(|_| "CURSOR_AUTH_FAILED")?;
+    logins.retain(|_, login| login.started_at.elapsed() < BROWSER_LOGIN_TIMEOUT);
+    let login = logins
+        .get(login_id)
+        .filter(|login| login.window_label == window.label())
+        .ok_or("CURSOR_AUTH_EXPIRED")?;
+    if login.tokens.is_none() {
+        return Err("CURSOR_AUTH_NOT_READY".into());
+    }
+    let mut login = logins.remove(login_id).ok_or("CURSOR_AUTH_EXPIRED")?;
+    let tokens = login.tokens.take().ok_or("CURSOR_AUTH_NOT_READY")?;
+    Ok((login, tokens))
+}
+
 /// 刷新已有账号的 token
-/// 使用新的 session_token 更新指定账号的认证信息
+/// 使用已完成且账号一致的浏览器授权更新认证信息
 #[tauri::command]
 pub async fn cursor_refresh_account_tokens(
     app: AppHandle,
+    window: Window,
     account_id: String,
-    session_token: String,
+    login_id: String,
 ) -> Result<Account, String> {
-    // 1. 加载现有账号
+    let (login, token_response) = take_browser_login(&window, &login_id)?;
     let mut account = storage::load_account(&app, &account_id).await?;
-
-    // 2. 获取新的 access token
-    let token_response = auth::get_access_token_from_session(&session_token).await?;
-
-    // 3. 解析过期时间
+    if !account
+        .email
+        .trim()
+        .eq_ignore_ascii_case(login.user_info.email.trim())
+    {
+        return Err("CURSOR_AUTH_ACCOUNT_MISMATCH".into());
+    }
     let expiry_timestamp = parse_jwt_exp(&token_response.access_token)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp() + 86400 * 60);
-
-    let session_expiry_timestamp = parse_session_token_exp(&session_token);
-
-    // 4. 更新 token 数据
+        .filter(|expiry| *expiry > chrono::Utc::now().timestamp())
+        .ok_or("CURSOR_AUTH_INVALID_RESPONSE")?;
+    let session_expiry_timestamp = parse_session_token_exp(&login.session_token);
     account.token.access_token = token_response.access_token;
     account.token.refresh_token = token_response.refresh_token.unwrap_or_default();
     account.token.expiry_timestamp = expiry_timestamp;
-    account.token.workos_cursor_session_token = Some(session_token);
+    account.token.user_id = Some(login.user_info.id);
+    account.token.workos_cursor_session_token = Some(login.session_token);
     account.token.session_expiry_timestamp = session_expiry_timestamp;
     account.updated_at = chrono::Utc::now().timestamp();
-
-    // 5. 保存更新后的账号
     storage::save_account(&app, &account).await?;
-
     Ok(account)
 }
 
-/// 使用 session token 添加账号（自动获取 accessToken）
-///
-/// 一站式添加账号：传入 session cookie，自动完成：
-/// 1. 获取订阅信息
-/// 2. PKCE 流程获取 accessToken
-/// 3. 保存账号
-///
-/// 注意：邮箱重复检查由前端负责
+/// 保存已完成浏览器授权的账号，同时保留原 Session Token 用于用量查询
 #[tauri::command]
 pub async fn cursor_add_account_with_session(
     app: AppHandle,
-    session_token: String,
+    window: Window,
+    login_id: String,
 ) -> Result<Account, String> {
-    // 1. 获取用户信息（使用 session_token + Cookie 认证）
-    let user_info = auth::get_user_info(&session_token).await?;
-
-    // 2. 获取 accessToken
-    let token_response = auth::get_access_token_from_session(&session_token).await?;
-
-    // 5. 解析 JWT 中的过期时间
+    let (login, token_response) = take_browser_login(&window, &login_id)?;
+    if storage::list_accounts(&app).await?.iter().any(|account| {
+        account
+            .email
+            .trim()
+            .eq_ignore_ascii_case(login.user_info.email.trim())
+    }) {
+        return Err("CURSOR_AUTH_ACCOUNT_EXISTS".into());
+    }
     let expiry_timestamp = parse_jwt_exp(&token_response.access_token)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp() + 86400 * 60); // 默认 60 天
-
-    // 3. 解析 session token 的过期时间
-    let session_expiry_timestamp = parse_session_token_exp(&session_token);
-
-    // 4. 创建 Token 数据
+        .filter(|expiry| *expiry > chrono::Utc::now().timestamp())
+        .ok_or("CURSOR_AUTH_INVALID_RESPONSE")?;
+    let session_expiry_timestamp = parse_session_token_exp(&login.session_token);
     let token = TokenData::new(
         token_response.access_token,
         token_response.refresh_token.unwrap_or_default(),
         expiry_timestamp,
-        Some(user_info.id.clone()),
-        Some(session_token),
+        Some(login.user_info.id),
+        Some(login.session_token),
         session_expiry_timestamp,
     );
-
-    // 5. 创建账号
     let account_id = uuid::Uuid::new_v4().to_string();
-    let mut account = Account::new(account_id, user_info.email, token);
-    account.name = user_info.name;
-
-    // 6. 保存账号
+    let mut account = Account::new(account_id, login.user_info.email, token);
+    account.name = login.user_info.name;
     storage::save_account(&app, &account).await?;
-
     Ok(account)
 }
 

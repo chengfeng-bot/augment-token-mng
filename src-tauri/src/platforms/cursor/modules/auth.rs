@@ -561,6 +561,62 @@ fn generate_pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(result)
 }
 
+pub struct BrowserAuthorization {
+    pub uuid: String,
+    pub verifier: String,
+    pub url: String,
+}
+
+pub fn create_browser_authorization() -> BrowserAuthorization {
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let verifier = generate_pkce_verifier();
+    let challenge = generate_pkce_challenge(&verifier);
+    let url =
+        format!("https://cursor.com/loginDeepControl?challenge={challenge}&uuid={uuid}&mode=login");
+    BrowserAuthorization {
+        uuid,
+        verifier,
+        url,
+    }
+}
+
+pub async fn poll_browser_authorization(
+    uuid: &str,
+    verifier: &str,
+) -> Result<Option<AccessTokenResponse>, String> {
+    let client = create_proxy_client().map_err(|_| "CURSOR_AUTH_FAILED")?;
+    let url = format!("https://api2.cursor.sh/auth/poll?uuid={uuid}&verifier={verifier}");
+    let response = match client
+        .get(&url)
+        .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        // A dropped connection must not discard an authorization still open in the browser.
+        Err(_) => return Ok(None),
+    };
+    let status = response.status();
+    if status.as_u16() == 404 || status.as_u16() == 429 || status.is_server_error() {
+        return Ok(None);
+    }
+    if matches!(status.as_u16(), 401 | 403) {
+        return Err("CURSOR_AUTH_DENIED".into());
+    }
+    if !status.is_success() {
+        return Err("CURSOR_AUTH_FAILED".into());
+    }
+    let tokens = response
+        .json::<AccessTokenResponse>()
+        .await
+        .map_err(|_| "CURSOR_AUTH_INVALID_RESPONSE")?;
+    if tokens.access_token.trim().is_empty() {
+        return Err("CURSOR_AUTH_INVALID_RESPONSE".into());
+    }
+    Ok(Some(tokens))
+}
+
 /// 触发授权登录 - 用 session token 自动确认授权
 async fn trigger_authorization_login(
     uuid: &str,

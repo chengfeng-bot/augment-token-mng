@@ -2,9 +2,9 @@
   <BaseModal
     :visible="true"
     :title="$t('platform.cursor.addAccountDialog.title')"
-    :show-close="true"
-    :close-on-overlay="!isLoading && !showConfirmDialog"
-    :close-on-esc="!isLoading && !showConfirmDialog"
+    :show-close="!isLoading || isWaitingForBrowser"
+    :close-on-overlay="(!isLoading || isWaitingForBrowser) && !showConfirmDialog"
+    :close-on-esc="(!isLoading || isWaitingForBrowser) && !showConfirmDialog"
     :body-scroll="false"
     modal-class="max-w-[500px]"
     @close="handleClose"
@@ -43,12 +43,23 @@
           :placeholder="$t('platform.cursor.addAccountDialog.sessionTokenPlaceholder')"
           class="input resize-none"
           rows="4"
-          :disabled="isLoading"
+          :disabled="isLoading || showConfirmDialog"
         ></textarea>
         <p class="mt-1.5 text-xs text-text-muted">
           {{ $t('platform.cursor.addAccountDialog.sessionTokenHint') }}
         </p>
       </div>
+    </div>
+
+    <div v-if="isWaitingForBrowser" role="status" class="mt-4 rounded-lg border border-accent/20 bg-accent/10 p-4">
+      <div class="flex items-center gap-2 text-sm font-medium text-text">
+        <span class="btn-spinner btn-spinner--sm text-accent" aria-hidden="true"></span>
+        {{ $t('platform.cursor.addAccountDialog.waitingForBrowser') }}
+      </div>
+      <p class="mt-2 break-words text-[13px] text-text-secondary">
+        {{ $t('platform.cursor.addAccountDialog.browserAccountHint', { email: authAttempt?.email }) }}
+      </p>
+      <p class="mt-2 text-xs text-text-muted">{{ $t('platform.cursor.addAccountDialog.browserWaitHint') }}</p>
     </div>
 
     <!-- Access Token 方式 -->
@@ -100,11 +111,19 @@
     </div>
 
     <template #footer>
-      <button @click="handleClose" class="btn btn--secondary" :disabled="isLoading">
+      <button @click="handleClose" class="btn btn--secondary" :disabled="isLoading && !isWaitingForBrowser">
         {{ $t('common.cancel') }}
       </button>
       <button
-        v-if="!showConfirmDialog"
+        v-if="isWaitingForBrowser"
+        @click="reopenBrowser"
+        class="btn btn--primary"
+        :disabled="isReopening"
+      >
+        {{ $t('platform.cursor.addAccountDialog.reopenBrowser') }}
+      </button>
+      <button
+        v-else-if="!showConfirmDialog"
         @click="handleAdd"
         class="btn btn--primary"
         :disabled="!canSubmit || isLoading"
@@ -134,7 +153,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import BaseModal from '@/components/common/BaseModal.vue'
@@ -162,9 +181,49 @@ const accessTokenEmail = ref('')
 const isLoading = ref(false)
 const error = ref('')
 const showConfirmDialog = ref(false)
-const userInfo = ref(null)
 const existingAccountId = ref(null)
 const confirmEmail = ref('')
+const authAttempt = ref(null)
+const isWaitingForBrowser = ref(false)
+const isReopening = ref(false)
+let activeOperation = 0
+let disposed = false
+let authDeadline = 0
+let pollTimer
+let resolvePollDelay
+
+const isCurrent = operation => !disposed && operation === activeOperation
+
+const discardAttempt = () => {
+  clearTimeout(pollTimer)
+  resolvePollDelay?.()
+  resolvePollDelay = null
+  const loginId = authAttempt.value?.login_id
+  authAttempt.value = null
+  isWaitingForBrowser.value = false
+  isReopening.value = false
+  if (loginId) invoke('cursor_cancel_browser_login', { loginId }).catch(() => {})
+}
+
+const formatAuthError = err => {
+  const message = err?.message || String(err)
+  const keys = {
+    CURSOR_AUTH_SESSION_CHECK_FAILED: 'sessionCheckFailed',
+    CURSOR_AUTH_IDENTITY_UNAVAILABLE: 'identityUnavailable',
+    CURSOR_AUTH_EXPIRED: 'authExpired',
+    CURSOR_AUTH_ACCOUNT_MISMATCH: 'authAccountMismatch',
+    CURSOR_AUTH_ACCOUNT_EXISTS: 'authAccountExists',
+    CURSOR_AUTH_BROWSER_OPEN_FAILED: 'browserOpenFailed',
+    CURSOR_AUTH_DENIED: 'authDenied',
+    CURSOR_AUTH_INVALID_RESPONSE: 'authInvalidResponse',
+    CURSOR_AUTH_NOT_READY: 'authNotReady',
+    CURSOR_AUTH_BUSY: 'authBusy',
+    CURSOR_AUTH_FAILED: 'authFailed'
+  }
+  return keys[message]
+    ? $t(`platform.cursor.addAccountDialog.${keys[message]}`, { email: authAttempt.value?.email || confirmEmail.value })
+    : message
+}
 
 const canSubmit = computed(() => {
   if (activeTab.value === 'session') {
@@ -175,6 +234,8 @@ const canSubmit = computed(() => {
 
 const switchTab = (tab) => {
   if (isLoading.value) return
+  activeOperation += 1
+  discardAttempt()
   activeTab.value = tab
   error.value = ''
   showConfirmDialog.value = false
@@ -184,7 +245,10 @@ const switchTab = (tab) => {
 }
 
 const handleClose = () => {
-  if (isLoading.value) return
+  if (isLoading.value && !isWaitingForBrowser.value) return
+  activeOperation += 1
+  discardAttempt()
+  isLoading.value = false
   emit('close')
 }
 
@@ -197,87 +261,127 @@ const checkEmailExists = (email) => {
 }
 
 const handleAdd = async () => {
-  if (!canSubmit.value) return
+  if (!canSubmit.value || isLoading.value) return
 
+  const operation = ++activeOperation
   error.value = ''
   isLoading.value = true
+  existingAccountId.value = null
 
   try {
     if (activeTab.value === 'session') {
-      await handleAddWithSession()
+      await handleAddWithSession(operation)
     } else {
-      await handleAddWithAccessToken()
+      await handleAddWithAccessToken(operation)
     }
   } catch (err) {
-    console.error('Add account error:', err)
-    error.value = err?.message || err || $t('platform.cursor.addAccountDialog.addFailed')
-  } finally {
-    if (!showConfirmDialog.value) {
-      isLoading.value = false
+    if (isCurrent(operation)) {
+      error.value = formatAuthError(err)
+      discardAttempt()
+      showConfirmDialog.value = false
     }
+  } finally {
+    if (isCurrent(operation)) isLoading.value = false
   }
 }
 
-const handleAddWithSession = async () => {
-  const info = await invoke('cursor_get_user_info_from_session', {
+const handleAddWithSession = async operation => {
+  const attempt = await invoke('cursor_begin_browser_login', {
     sessionToken: sessionToken.value.trim()
   })
-  userInfo.value = info
+  if (!isCurrent(operation)) {
+    invoke('cursor_cancel_browser_login', { loginId: attempt.login_id }).catch(() => {})
+    return
+  }
+  authAttempt.value = attempt
+  authDeadline = Date.now() + attempt.expires_in_seconds * 1000
+  confirmEmail.value = attempt.email
 
-  const existing = checkEmailExists(info.email)
+  const existing = checkEmailExists(attempt.email)
   if (existing) {
     existingAccountId.value = existing.id
-    confirmEmail.value = info.email
     showConfirmDialog.value = true
-    isLoading.value = false
     return
   }
 
-  await confirmAddAccount()
+  await authorizeAndSave(operation)
 }
 
-const handleAddWithAccessToken = async () => {
+const handleAddWithAccessToken = async operation => {
   const account = await invoke('cursor_add_account_with_access_token', {
     email: accessTokenEmail.value.trim(),
     accessToken: accessToken.value.trim()
   })
 
-  const existing = checkEmailExists(account.email)
-  if (existing) {
-    // 后端已保存，但前端检测到重复，这里直接 emit 让列表刷新
-    // 因为 access token 方式后端会直接保存，不做覆盖确认
-  }
-
-  emit('added', account)
+  if (isCurrent(operation)) emit('added', account)
 }
 
 const handleConfirmAdd = async () => {
+  if (isLoading.value || !authAttempt.value) return
+  const operation = activeOperation
   error.value = ''
   isLoading.value = true
 
   try {
-    await confirmAddAccount()
+    await authorizeAndSave(operation)
   } catch (err) {
-    console.error('Confirm add error:', err)
-    error.value = err?.message || err || $t('platform.cursor.addAccountDialog.addFailed')
-    isLoading.value = false
+    if (isCurrent(operation)) {
+      error.value = formatAuthError(err)
+      discardAttempt()
+      showConfirmDialog.value = false
+    }
+  } finally {
+    if (isCurrent(operation)) isLoading.value = false
   }
 }
 
-const confirmAddAccount = async () => {
-  if (existingAccountId.value) {
-    const account = await invoke('cursor_refresh_account_tokens', {
-      accountId: existingAccountId.value,
-      sessionToken: sessionToken.value.trim()
-    })
-    emit('added', account)
-  } else {
-    const account = await invoke('cursor_add_account_with_session', {
-      sessionToken: sessionToken.value.trim()
-    })
-    emit('added', account)
+const reopenBrowser = async () => {
+  if (!authAttempt.value || isReopening.value || !isWaitingForBrowser.value) return
+  const operation = activeOperation
+  isReopening.value = true
+  try {
+    await invoke('cursor_open_browser_login', { loginId: authAttempt.value.login_id })
+    if (isCurrent(operation) && isWaitingForBrowser.value) error.value = ''
+  } catch (err) {
+    if (isCurrent(operation) && isWaitingForBrowser.value) error.value = formatAuthError(err)
+  } finally {
+    if (isCurrent(operation)) isReopening.value = false
   }
 }
+
+const authorizeAndSave = async operation => {
+  const loginId = authAttempt.value.login_id
+  showConfirmDialog.value = false
+  isWaitingForBrowser.value = true
+  await reopenBrowser()
+  while (isCurrent(operation)) {
+    if (Date.now() >= authDeadline) throw new Error('CURSOR_AUTH_EXPIRED')
+    const ready = await invoke('cursor_poll_browser_login', { loginId })
+    if (!isCurrent(operation)) return
+    if (ready) {
+      // Saving is a separate step, so a cancelled poll can never write an account.
+      isWaitingForBrowser.value = false
+      const account = existingAccountId.value
+        ? await invoke('cursor_refresh_account_tokens', { accountId: existingAccountId.value, loginId })
+        : await invoke('cursor_add_account_with_session', { loginId })
+      if (isCurrent(operation)) {
+        authAttempt.value = null
+        emit('added', account)
+      }
+      return
+    }
+    await new Promise(resolve => {
+      resolvePollDelay = resolve
+      pollTimer = setTimeout(() => { resolvePollDelay = null; resolve() }, 2000)
+    })
+  }
+}
+
+onUnmounted(() => {
+  disposed = true
+  activeOperation += 1
+  discardAttempt()
+})
 </script>
 
 <style scoped>

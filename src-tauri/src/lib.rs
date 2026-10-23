@@ -729,6 +729,10 @@ pub fn run() {
 
             // Cursor 管理命令
             cursor::cursor_get_user_info_from_session,
+            cursor::cursor_begin_browser_login,
+            cursor::cursor_open_browser_login,
+            cursor::cursor_poll_browser_login,
+            cursor::cursor_cancel_browser_login,
             cursor::cursor_refresh_account_tokens,
             cursor::cursor_add_account_with_session,
             cursor::cursor_add_account_with_access_token,
